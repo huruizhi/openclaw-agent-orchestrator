@@ -452,8 +452,10 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
 
     payloads: list[dict[str, Any]] = []
     for tid, t in pending:
+        prev_status = t.get("status")
         t["status"] = "in-progress"
         t["dispatchedAt"] = now_iso()
+        notified = t.setdefault("notified", {})
         task_text = args.task or proj.get("routing", {}).get("request", proj.get("goal", ""))
         payload = {
             "agentId": t.get("agentId"),
@@ -483,15 +485,18 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
                 "time": t["dispatchedAt"],
             },
         )
-        _notify_agent(proj, str(t.get("agentId") or ""), detail_msg)
-        _notify_main(
-            proj,
-            _render_template(
+        should_notify_dispatch = (prev_status in ("pending", "retry-pending")) and (not notified.get("dispatch"))
+        if should_notify_dispatch:
+            _notify_agent(proj, str(t.get("agentId") or ""), detail_msg)
+            _notify_main(
                 proj,
-                "main_dispatch",
-                {"project": proj.get("project"), "task_id": tid, "agent_id": t.get("agentId")},
-            ),
-        )
+                _render_template(
+                    proj,
+                    "main_dispatch",
+                    {"project": proj.get("project"), "task_id": tid, "agent_id": t.get("agentId")},
+                ),
+            )
+            notified["dispatch"] = now_iso()
 
         if args.execute:
             cmd = [
@@ -520,7 +525,10 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
                     "raw_output": raw,
                 },
             )
-            _notify_agent(proj, str(t.get("agentId") or ""), detail_done)
+            notified = t.setdefault("notified", {})
+            if not notified.get("done"):
+                _notify_agent(proj, str(t.get("agentId") or ""), detail_done)
+                notified["done"] = now_iso()
             print(f"auto-executed via openclaw agent: {tid} -> done")
 
     if args.out_json:
@@ -681,20 +689,23 @@ def cmd_collect(args: argparse.Namespace) -> None:
     task["output"] = args.output
     task["status"] = "done"
     task["completedAt"] = now_iso()
-    _notify_agent(
-        proj,
-        str(task.get("agentId") or ""),
-        _render_template(
+    notified = task.setdefault("notified", {})
+    if not notified.get("done"):
+        _notify_agent(
             proj,
-            "agent_done",
-            {
-                "project": proj.get("project"),
-                "task_id": args.task_id,
-                "agent_id": task.get("agentId"),
-                "raw_output": args.output,
-            },
-        ),
-    )
+            str(task.get("agentId") or ""),
+            _render_template(
+                proj,
+                "agent_done",
+                {
+                    "project": proj.get("project"),
+                    "task_id": args.task_id,
+                    "agent_id": task.get("agentId"),
+                    "raw_output": args.output,
+                },
+            ),
+        )
+        notified["done"] = now_iso()
     _refresh_project_status(proj)
     if proj.get("status") == "completed":
         _notify_main(
