@@ -335,6 +335,13 @@ def cmd_status(args: argparse.Namespace) -> None:
             flag = " ⚠confirm" if t.get("needsHumanConfirmation") else ""
             print(f"  - {tid}: {t.get('agentId')} [{t.get('status')}] retry={t.get('retry',0)}{flag}")
 
+    debate = proj.get("debate", {})
+    if debate.get("enabled"):
+        agents = debate.get("agents", [])
+        responses = debate.get("responses", {})
+        reviews = debate.get("reviews", {})
+        print(f"debate: state={debate.get('state')} responses={len(responses)}/{len(agents)} reviews={len(reviews)}/{len(agents)}")
+
 
 def _load_project_or_die(project: str) -> tuple[Path, dict[str, Any]]:
     pf = project_file(project)
@@ -486,6 +493,15 @@ def cmd_show(args: argparse.Namespace) -> None:
         dep_txt = f" deps={deps}" if deps else ""
         print(f"  - {tid}: {t.get('agentId')} {t.get('status')} retry={t.get('retry',0)}{dep_txt}")
 
+    debate = proj.get("debate", {})
+    if debate.get("enabled"):
+        agents = debate.get("agents", [])
+        responses = debate.get("responses", {})
+        reviews = debate.get("reviews", {})
+        print("Debate:")
+        print(f"  state={debate.get('state')} round={debate.get('round',0)}")
+        print(f"  agents={len(agents)} responses={len(responses)}/{len(agents)} reviews={len(reviews)}/{len(agents)}")
+
 
 def cmd_debate(args: argparse.Namespace) -> None:
     pf, proj = _load_project_or_die(args.project)
@@ -516,11 +532,24 @@ def cmd_debate(args: argparse.Namespace) -> None:
             die("collect requires agent_id and content")
         if args.agent_id not in set(debate.get("agents", [])):
             die(f"agent not in active debate: {args.agent_id}")
-        debate.setdefault("responses", {})[args.agent_id] = args.content
-        if set(debate.get("responses", {}).keys()) >= set(debate.get("agents", [])):
-            debate["state"] = "ready-review"
+        if debate.get("state") == "reviewing":
+            debate.setdefault("reviews", {})[args.agent_id] = args.content
+            if set(debate.get("reviews", {}).keys()) >= set(debate.get("agents", [])):
+                debate["state"] = "ready-synthesize"
+                hint = "all reviews collected; next: debate <project> synthesize"
+            else:
+                missing = [a for a in debate.get("agents", []) if a not in debate.get("reviews", {})]
+                hint = f"waiting reviews for: {', '.join(missing)}"
+        else:
+            debate.setdefault("responses", {})[args.agent_id] = args.content
+            if set(debate.get("responses", {}).keys()) >= set(debate.get("agents", [])):
+                debate["state"] = "ready-review"
+                hint = "all responses collected; next: debate <project> review"
+            else:
+                missing = [a for a in debate.get("agents", []) if a not in debate.get("responses", {})]
+                hint = f"waiting for: {', '.join(missing)}"
         _save_project_with_audit(pf, proj, f"debate collect from {args.agent_id}")
-        print(f"collected response: {args.agent_id}")
+        print(f"collected response: {args.agent_id} ({hint})")
         return
 
     if args.action == "review":
@@ -531,13 +560,17 @@ def cmd_debate(args: argparse.Namespace) -> None:
         for aid in debate.get("agents", []):
             others = {k: v for k, v in debate.get("responses", {}).items() if k != aid}
             print(f"\n[review prompt for {aid}]")
-            print(f"Your previous response: {debate.get('responses',{}).get(aid,'')}")
-            print("Others:")
+            print(f"Your previous response:\n{debate.get('responses',{}).get(aid,'')}\n")
+            print("Other debaters' responses:")
             for k, v in others.items():
                 print(f"- {k}: {v}")
+            print("\nTask: Review others. State agree/disagree, what is missing, and your updated position.")
+            print("Then collect with: debate <project> collect <agent_id> \"<review>\"")
         return
 
     if args.action == "synthesize":
+        if debate.get("state") not in ("reviewing", "ready-review", "ready-synthesize", "synthesized"):
+            die("debate not ready for synthesis")
         debate["state"] = "synthesized"
         _save_project_with_audit(pf, proj, "debate synthesized")
         print("Synthesis package:")
