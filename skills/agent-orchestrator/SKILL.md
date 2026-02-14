@@ -64,6 +64,8 @@ $AO relay auth-hardening main 1470703478627237899 --mode done
 $AO status auth-hardening --json
 $AO show auth-hardening
 $AO audit auth-hardening --tail 20
+$AO validate auth-hardening
+$AO runbook auth-hardening --channel-id 1470703478627237899 --out-json /tmp/ao-runbook.json
 $AO list
 
 # 11) Debate flow (optional)

@@ -664,6 +664,97 @@ def cmd_audit(args: argparse.Namespace) -> None:
         print(f"[{item.get('time')}] {item.get('event')}")
 
 
+def cmd_validate(args: argparse.Namespace) -> None:
+    _, proj = _load_project_or_die(args.project)
+    errs: list[str] = []
+    tasks = proj.get("tasks", {}) or {}
+
+    # Basic fields
+    for k in ["project", "status", "policy", "routing", "plan", "tasks"]:
+        if k not in proj:
+            errs.append(f"missing top-level key: {k}")
+
+    # Dependency validity
+    for tid, t in tasks.items():
+        for dep in t.get("dependsOn", []) or []:
+            if dep not in tasks:
+                errs.append(f"task {tid} has missing dependency: {dep}")
+
+    # Simple cycle check (DFS)
+    seen: dict[str, int] = {k: 0 for k in tasks.keys()}  # 0 white,1 gray,2 black
+
+    def dfs(n: str) -> bool:
+        seen[n] = 1
+        for d in tasks.get(n, {}).get("dependsOn", []) or []:
+            if d not in tasks:
+                continue
+            if seen[d] == 1:
+                return True
+            if seen[d] == 0 and dfs(d):
+                return True
+        seen[n] = 2
+        return False
+
+    for node in tasks.keys():
+        if seen[node] == 0 and dfs(node):
+            errs.append("dependency cycle detected")
+            break
+
+    if errs:
+        print("❌ validation failed")
+        for e in errs:
+            print(f"- {e}")
+        raise SystemExit(2)
+
+    print("✅ validation passed")
+
+
+def cmd_runbook(args: argparse.Namespace) -> None:
+    _, proj = _load_project_or_die(args.project)
+    tasks = proj.get("tasks", {}) or {}
+
+    def deps_done(t: dict[str, Any]) -> bool:
+        deps = t.get("dependsOn", []) or []
+        return all(tasks.get(d, {}).get("status") == "done" for d in deps)
+
+    ready = [
+        (tid, t)
+        for tid, t in tasks.items()
+        if t.get("status") in ("pending", "retry-pending") and deps_done(t)
+    ]
+
+    runbook = {
+        "project": proj.get("project"),
+        "status": proj.get("status"),
+        "next": [],
+    }
+    request = proj.get("routing", {}).get("request", proj.get("goal", ""))
+    for tid, t in ready:
+        runbook["next"].append(
+            {
+                "taskId": tid,
+                "agentId": t.get("agentId"),
+                "spawn": {
+                    "agentId": t.get("agentId"),
+                    "label": f"ao:{proj.get('project')}:{tid}",
+                    "task": request,
+                },
+                "relayDispatchTemplate": {
+                    "action": "send",
+                    "target": args.channel_id or "<channel_id>",
+                    "message": f"📋 **任务派发**\\n项目: {proj.get('project')}\\n任务: {tid}\\nAgent: {t.get('agentId')}\\n请求: {request}",
+                },
+            }
+        )
+
+    if args.out_json:
+        Path(args.out_json).write_text(json.dumps(runbook, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(f"✅ runbook exported: {args.out_json}")
+        return
+
+    print(json.dumps(runbook, ensure_ascii=False, indent=2))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="agent-orchestrator v1")
     sub = p.add_subparsers(dest="cmd")
@@ -743,6 +834,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("project")
     sp.add_argument("--tail", type=int, default=30)
 
+    sp = sub.add_parser("validate", help="validate project structure and dependencies")
+    sp.add_argument("project")
+
+    sp = sub.add_parser("runbook", help="export actionable next-step runbook")
+    sp.add_argument("project")
+    sp.add_argument("--channel-id", default="", help="optional relay target channel id")
+    sp.add_argument("--out-json", default="", help="output json path")
+
     return p
 
 
@@ -785,6 +884,10 @@ def main() -> None:
         cmd_debate(args)
     elif args.cmd == "audit":
         cmd_audit(args)
+    elif args.cmd == "validate":
+        cmd_validate(args)
+    elif args.cmd == "runbook":
+        cmd_runbook(args)
     else:
         parser.print_help()
         raise SystemExit(1)
