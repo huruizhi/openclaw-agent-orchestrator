@@ -71,6 +71,8 @@ $AO show auth-hardening
 $AO audit auth-hardening --tail 20
 $AO validate auth-hardening
 $AO notify auth-hardening --target 1470703478627237899 --channel discord --enabled on
+$AO template auth-hardening show
+$AO template auth-hardening set --key main_dispatch --value "🧭 编排进度 | {project}\ndispatch: {task_id} -> {agent_id}"
 $AO runbook auth-hardening --channel-id 1470703478627237899 --out-json /tmp/ao-runbook.json
 $AO list
 

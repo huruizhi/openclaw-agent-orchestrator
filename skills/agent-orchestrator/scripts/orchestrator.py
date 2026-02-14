@@ -63,6 +63,17 @@ def project_file(project: str) -> Path:
     return PROJECTS_DIR / f"{safe}.json"
 
 
+def _render_template(proj: dict[str, Any], key: str, ctx: dict[str, Any]) -> str:
+    templates = (proj.get("templates") or {})
+    raw = templates.get(key, "")
+    if not raw:
+        return ""
+    try:
+        return raw.format(**ctx)
+    except Exception:
+        return raw
+
+
 def read_agents(config_path: str) -> list[dict[str, str]]:
     cfg = load_json(Path(config_path), default={})
     agents = []
@@ -171,6 +182,18 @@ def cmd_init(args: argparse.Namespace) -> None:
             "enabled": True,
             "channel": args.notify_channel or os.environ.get("AO_NOTIFY_CHANNEL", "discord"),
             "target": args.notify_target or os.environ.get("AO_NOTIFY_TARGET", ""),
+        },
+        "templates": {
+            "main_plan": "🧭 编排进度 | {project}\nplan ready (mode={mode}, tasks={tasks_count})\n状态: awaiting-approval\n请先审计确认后派发：ao approve <project> --by <name>",
+            "main_approval": "🧭 编排进度 | {project}\napproval granted by {approved_by}\n可进入任务派发流程",
+            "main_dispatch": "🧭 编排进度 | {project}\ndispatch started: {task_id} -> {agent_id}",
+            "main_fail": "🧭 编排进度 | {project}\n{task_id} 达到重试上限，等待人工确认",
+            "main_confirm": "🧭 编排进度 | {project}\n人工确认通过：{task_id}，可继续派发",
+            "main_final": "🎯 最终结果 | {project}\n- Outcome: 全部任务已完成\n- Raw logs: 已同步至执行频道",
+            "agent_dispatch": "📋 **任务派发 | {project}**\n- Task: {task_id}\n- Agent: {agent_id}\n- Mode: {mode}\n- Priority: 质量 > 成本 > 速度\n- Request:\n{request}\n\n- Execution: {label} | {time}",
+            "agent_done": "✅ **任务完成 | {project}**\n- Task: {task_id}\n- Agent: {agent_id}\n- Status: done\n- Raw Output:\n{raw_output}",
+            "agent_fail": "⚠️ **任务异常 | {project}**\n- Task: {task_id}\n- Agent: {agent_id}\n- Retry: {retry}/{max_retries}\n- Error:\n{error}\n- Next Action: needs-human-confirmation",
+            "agent_confirm": "✅ **人工确认通过 | {project}**\n- Task: {task_id}\n- Agent: {agent_id}\n- Status: retry-pending"
         },
         "audit": [{"time": now_iso(), "event": "project initialized"}],
     }
@@ -326,8 +349,12 @@ def cmd_plan(args: argparse.Namespace) -> None:
     proj["updatedAt"] = now_iso()
     proj.setdefault("audit", []).append({"time": now_iso(), "event": f"plan resolved mode={resolved}"})
 
-    summary = [f"🧭 编排进度 | {proj.get('project')}", f"plan ready (mode={resolved}, tasks={len(tasks)})", "状态: awaiting-approval", "请先审计确认后派发：ao approve <project> --by <name>"]
-    _notify_main(proj, "\n".join(summary))
+    summary = _render_template(
+        proj,
+        "main_plan",
+        {"project": proj.get("project"), "mode": resolved, "tasks_count": len(tasks)},
+    )
+    _notify_main(proj, summary)
 
     save_json(pf, proj)
 
@@ -388,10 +415,10 @@ def cmd_approve(args: argparse.Namespace) -> None:
 
     _notify_main(
         proj,
-        (
-            f"🧭 编排进度 | {proj.get('project')}\n"
-            f"approval granted by {approval['approvedBy']}\n"
-            f"可进入任务派发流程"
+        _render_template(
+            proj,
+            "main_approval",
+            {"project": proj.get("project"), "approved_by": approval["approvedBy"]},
         ),
     )
     _save_project_with_audit(pf, proj, f"approval granted by {approval['approvedBy']}")
@@ -443,19 +470,27 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
         t["taskRequest"] = task_text
         t["dispatchLabel"] = payload["label"]
 
-        detail_msg = (
-            f"📋 **任务派发 | {proj.get('project')}**\n"
-            f"- Task: {tid}\n"
-            f"- Agent: {t.get('agentId')}\n"
-            f"- Mode: {proj.get('plan', {}).get('resolvedMode')}\n"
-            f"- Priority: 质量 > 成本 > 速度\n"
-            f"- Request:\n{task_text}\n\n"
-            f"- Execution: {payload['label']} | {t['dispatchedAt']}"
+        detail_msg = _render_template(
+            proj,
+            "agent_dispatch",
+            {
+                "project": proj.get("project"),
+                "task_id": tid,
+                "agent_id": t.get("agentId"),
+                "mode": proj.get("plan", {}).get("resolvedMode"),
+                "request": task_text,
+                "label": payload["label"],
+                "time": t["dispatchedAt"],
+            },
         )
         _notify_agent(proj, str(t.get("agentId") or ""), detail_msg)
         _notify_main(
             proj,
-            f"🧭 编排进度 | {proj.get('project')}\ndispatch started: {tid} -> {t.get('agentId')}",
+            _render_template(
+                proj,
+                "main_dispatch",
+                {"project": proj.get("project"), "task_id": tid, "agent_id": t.get("agentId")},
+            ),
         )
 
         if args.execute:
@@ -475,12 +510,15 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
             t["status"] = "done"
             t["completedAt"] = now_iso()
             t["output"] = raw
-            detail_done = (
-                f"✅ **任务完成 | {proj.get('project')}**\n"
-                f"- Task: {tid}\n"
-                f"- Agent: {t.get('agentId')}\n"
-                f"- Status: done\n"
-                f"- Raw Output:\n{raw}"
+            detail_done = _render_template(
+                proj,
+                "agent_done",
+                {
+                    "project": proj.get("project"),
+                    "task_id": tid,
+                    "agent_id": t.get("agentId"),
+                    "raw_output": raw,
+                },
             )
             _notify_agent(proj, str(t.get("agentId") or ""), detail_done)
             print(f"auto-executed via openclaw agent: {tid} -> done")
@@ -493,11 +531,7 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
     if proj.get("status") == "completed":
         _notify_main(
             proj,
-            (
-                f"🎯 最终结果 | {proj.get('project')}\n"
-                f"- Outcome: 全部任务已完成\n"
-                f"- Raw logs: 已同步至执行频道"
-            ),
+            _render_template(proj, "main_final", {"project": proj.get("project")}),
         )
     _save_project_with_audit(pf, proj, f"dispatch {len(pending)} task(s){' (executed)' if args.execute else ''}")
 
@@ -650,23 +684,22 @@ def cmd_collect(args: argparse.Namespace) -> None:
     _notify_agent(
         proj,
         str(task.get("agentId") or ""),
-        (
-            f"✅ **任务完成 | {proj.get('project')}**\n"
-            f"- Task: {args.task_id}\n"
-            f"- Agent: {task.get('agentId')}\n"
-            f"- Status: done\n"
-            f"- Raw Output:\n{args.output}"
+        _render_template(
+            proj,
+            "agent_done",
+            {
+                "project": proj.get("project"),
+                "task_id": args.task_id,
+                "agent_id": task.get("agentId"),
+                "raw_output": args.output,
+            },
         ),
     )
     _refresh_project_status(proj)
     if proj.get("status") == "completed":
         _notify_main(
             proj,
-            (
-                f"🎯 最终结果 | {proj.get('project')}\n"
-                f"- Outcome: 全部任务已完成\n"
-                f"- Raw logs: 已同步至执行频道"
-            ),
+            _render_template(proj, "main_final", {"project": proj.get("project")}),
         )
     _save_project_with_audit(pf, proj, f"collect {args.task_id} done")
     print(f"✅ collected raw output for {args.task_id}")
@@ -689,18 +722,22 @@ def cmd_fail(args: argparse.Namespace) -> None:
         _notify_agent(
             proj,
             str(task.get("agentId") or ""),
-            (
-                f"⚠️ **任务异常 | {proj.get('project')}**\n"
-                f"- Task: {args.task_id}\n"
-                f"- Agent: {task.get('agentId')}\n"
-                f"- Retry: {retry}/{max_retries}\n"
-                f"- Error:\n{args.error}\n"
-                f"- Next Action: needs-human-confirmation"
+            _render_template(
+                proj,
+                "agent_fail",
+                {
+                    "project": proj.get("project"),
+                    "task_id": args.task_id,
+                    "agent_id": task.get("agentId"),
+                    "retry": retry,
+                    "max_retries": max_retries,
+                    "error": args.error,
+                },
             ),
         )
         _notify_main(
             proj,
-            f"🧭 编排进度 | {proj.get('project')}\n{args.task_id} 达到重试上限，等待人工确认",
+            _render_template(proj, "main_fail", {"project": proj.get("project"), "task_id": args.task_id}),
         )
         _refresh_project_status(proj)
         _save_project_with_audit(pf, proj, f"task {args.task_id} failed after {retry} retries")
@@ -726,16 +763,15 @@ def cmd_confirm(args: argparse.Namespace) -> None:
     _notify_agent(
         proj,
         str(task.get("agentId") or ""),
-        (
-            f"✅ **人工确认通过 | {proj.get('project')}**\n"
-            f"- Task: {args.task_id}\n"
-            f"- Agent: {task.get('agentId')}\n"
-            f"- Status: retry-pending"
+        _render_template(
+            proj,
+            "agent_confirm",
+            {"project": proj.get("project"), "task_id": args.task_id, "agent_id": task.get("agentId")},
         ),
     )
     _notify_main(
         proj,
-        f"🧭 编排进度 | {proj.get('project')}\n人工确认通过：{args.task_id}，可继续派发",
+        _render_template(proj, "main_confirm", {"project": proj.get("project"), "task_id": args.task_id}),
     )
     _refresh_project_status(proj)
     _save_project_with_audit(pf, proj, f"human confirmed retry for {args.task_id}")
@@ -1008,6 +1044,25 @@ def cmd_notify(args: argparse.Namespace) -> None:
     print(json.dumps(notify, ensure_ascii=False, indent=2))
 
 
+def cmd_template(args: argparse.Namespace) -> None:
+    pf, proj = _load_project_or_die(args.project)
+    tm = proj.setdefault("templates", {})
+    if args.action == "show":
+        if args.key:
+            print(tm.get(args.key, ""))
+        else:
+            print(json.dumps(tm, ensure_ascii=False, indent=2))
+        return
+    if args.action == "set":
+        if not args.key or args.value is None:
+            die("template set requires --key and --value")
+        tm[args.key] = args.value
+        _save_project_with_audit(pf, proj, f"template updated: {args.key}")
+        print(f"✅ template set: {args.key}")
+        return
+    die("unknown template action")
+
+
 def cmd_runbook(args: argparse.Namespace) -> None:
     _, proj = _load_project_or_die(args.project)
     tasks = proj.get("tasks", {}) or {}
@@ -1157,6 +1212,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--channel", default="", help="notification channel (default discord)")
     sp.add_argument("--enabled", choices=["on", "off"], default=None)
 
+    sp = sub.add_parser("template", help="show/set message templates")
+    sp.add_argument("project")
+    sp.add_argument("action", choices=["show", "set"])
+    sp.add_argument("--key", default="")
+    sp.add_argument("--value", default=None)
+
     return p
 
 
@@ -1207,6 +1268,8 @@ def main() -> None:
         cmd_runbook(args)
     elif args.cmd == "notify":
         cmd_notify(args)
+    elif args.cmd == "template":
+        cmd_template(args)
     else:
         parser.print_help()
         raise SystemExit(1)
