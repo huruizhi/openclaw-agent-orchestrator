@@ -167,6 +167,11 @@ def cmd_init(args: argparse.Namespace) -> None:
         "plan": {"mode": "auto", "resolvedMode": None, "tasks": []},
         "tasks": {},
         "debate": {"enabled": False, "round": 0, "state": "idle", "responses": {}, "reviews": {}},
+        "notifications": {
+            "enabled": True,
+            "channel": args.notify_channel or os.environ.get("AO_NOTIFY_CHANNEL", "discord"),
+            "target": args.notify_target or os.environ.get("AO_NOTIFY_TARGET", ""),
+        },
         "audit": [{"time": now_iso(), "event": "project initialized"}],
     }
     save_json(pf, data)
@@ -394,6 +399,17 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
         print("sessions_spawn payload (copy):")
         print(json.dumps(payload, ensure_ascii=False, indent=2))
 
+        _notify(
+            proj,
+            (
+                f"📋 **任务派发**\n"
+                f"项目: {proj.get('project')}\n"
+                f"任务: {tid}\n"
+                f"Agent: {t.get('agentId')}\n"
+                f"请求: {task_text}"
+            ),
+        )
+
         if args.execute:
             cmd = [
                 "openclaw",
@@ -411,6 +427,15 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
             t["status"] = "done"
             t["completedAt"] = now_iso()
             t["output"] = raw
+            _notify(
+                proj,
+                (
+                    f"✅ **任务完成**\n"
+                    f"项目: {proj.get('project')}\n"
+                    f"任务: {tid}\n"
+                    f"结果(原样输出):\n{raw}"
+                ),
+            )
             print(f"auto-executed via openclaw agent: {tid} -> done")
 
     if args.out_json:
@@ -431,6 +456,43 @@ def _run_json_cmd(cmd: list[str]) -> dict[str, Any]:
     except json.JSONDecodeError:
         # tolerate non-json wrappers, keep raw text
         return {"raw": raw}
+
+
+def _chunk_text(s: str, n: int) -> list[str]:
+    if n <= 0 or len(s) <= n:
+        return [s]
+    out = []
+    i = 0
+    while i < len(s):
+        out.append(s[i : i + n])
+        i += n
+    return out
+
+
+def _notify(proj: dict[str, Any], msg: str, max_chars: int = 1800) -> None:
+    notify = proj.get("notifications", {}) or {}
+    if not notify.get("enabled", True):
+        return
+    target = str(notify.get("target", "") or "").strip()
+    channel = str(notify.get("channel", "discord") or "discord")
+    if not target:
+        return
+    chunks = _chunk_text(msg, max_chars)
+    for idx, ch in enumerate(chunks, start=1):
+        text = ch if len(chunks) == 1 else f"[{idx}/{len(chunks)}]\n{ch}"
+        cmd = [
+            "openclaw",
+            "message",
+            "send",
+            "--channel",
+            channel,
+            "--target",
+            target,
+            "--message",
+            text,
+            "--json",
+        ]
+        _run_json_cmd(cmd)
 
 
 def _refresh_project_status(proj: dict[str, Any]) -> None:
@@ -457,6 +519,15 @@ def cmd_collect(args: argparse.Namespace) -> None:
     task["output"] = args.output
     task["status"] = "done"
     task["completedAt"] = now_iso()
+    _notify(
+        proj,
+        (
+            f"✅ **任务完成**\n"
+            f"项目: {proj.get('project')}\n"
+            f"任务: {args.task_id}\n"
+            f"结果(原样输出):\n{args.output}"
+        ),
+    )
     _refresh_project_status(proj)
     _save_project_with_audit(pf, proj, f"collect {args.task_id} done")
     print(f"✅ collected raw output for {args.task_id}")
@@ -476,6 +547,16 @@ def cmd_fail(args: argparse.Namespace) -> None:
     if retry >= max_retries:
         task["status"] = "failed"
         task["needsHumanConfirmation"] = True
+        _notify(
+            proj,
+            (
+                f"⚠ **任务失败待确认**\n"
+                f"项目: {proj.get('project')}\n"
+                f"任务: {args.task_id}\n"
+                f"错误: {args.error}\n"
+                f"已达重试上限: {retry}/{max_retries}"
+            ),
+        )
         _refresh_project_status(proj)
         _save_project_with_audit(pf, proj, f"task {args.task_id} failed after {retry} retries")
         print(f"⚠ {args.task_id} reached retry limit ({retry}/{max_retries}); waiting for human confirmation")
@@ -497,20 +578,18 @@ def cmd_confirm(args: argparse.Namespace) -> None:
 
     task["needsHumanConfirmation"] = False
     task["status"] = "retry-pending"
+    _notify(
+        proj,
+        (
+            f"✅ **人工确认通过**\n"
+            f"项目: {proj.get('project')}\n"
+            f"任务: {args.task_id}\n"
+            f"状态: retry-pending"
+        ),
+    )
     _refresh_project_status(proj)
     _save_project_with_audit(pf, proj, f"human confirmed retry for {args.task_id}")
     print(f"✅ human confirmation recorded: {args.task_id} can be dispatched again")
-
-
-def _chunk_text(s: str, n: int) -> list[str]:
-    if n <= 0 or len(s) <= n:
-        return [s]
-    out = []
-    i = 0
-    while i < len(s):
-        out.append(s[i : i + n])
-        i += n
-    return out
 
 
 def cmd_relay(args: argparse.Namespace) -> None:
@@ -820,6 +899,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("project")
     sp.add_argument("--goal", "-g", default="")
     sp.add_argument("--force", "-f", action="store_true")
+    sp.add_argument("--notify-channel", default="", help="notification channel (default: discord or AO_NOTIFY_CHANNEL)")
+    sp.add_argument("--notify-target", default="", help="notification target id (or AO_NOTIFY_TARGET)")
 
     sp = sub.add_parser("profile", help="profile commands")
     profile_sub = sp.add_subparsers(dest="profile_cmd")

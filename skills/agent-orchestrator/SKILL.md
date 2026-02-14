@@ -33,8 +33,8 @@ $AO profile sync
 # 2) Optional: enrich an agent profile
 $AO profile set work --desc "General productivity and operations" --tags "general,ops"
 
-# 3) Create project
-$AO init auth-hardening --goal "Harden auth module"
+# 3) Create project (默认会通知；建议设定通知目标)
+$AO init auth-hardening --goal "Harden auth module" --notify-target 1470703478627237899 --notify-channel discord
 
 # 4) Route natural-language request
 $AO route auth-hardening --request "分析 auth 模块安全风险并给出修复方案"
@@ -88,5 +88,6 @@ $AO debate auth-hardening synthesize
 
 ## Notes
 
-- v1 focuses on profile management, routing, and planning.
-- Dispatch/collect relay can be layered in next iteration while keeping this data model stable.
+- 默认通知开启：dispatch / collect / fail(上限) / confirm 都会发送通知。
+- 可通过 `init --notify-target/--notify-channel` 指定通知目标，或使用环境变量 `AO_NOTIFY_TARGET` / `AO_NOTIFY_CHANNEL`。
+- v1 focuses on profile management, routing, planning, and execution scaffolding.
