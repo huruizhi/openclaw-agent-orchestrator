@@ -52,8 +52,14 @@ $AO collect auth-hardening main "<raw worker output>"
 $AO fail auth-hardening main "timeout"
 $AO confirm auth-hardening main
 
-# 9) Inspect state
+# 9) Relay message payloads (dispatch / done)
+$AO relay auth-hardening main 1470703478627237899 --mode dispatch
+$AO relay auth-hardening main 1470703478627237899 --mode done
+
+# 10) Inspect state
 $AO status auth-hardening --json
+$AO audit auth-hardening --tail 20
+$AO list
 ```
 
 ## Policy Defaults (v1)

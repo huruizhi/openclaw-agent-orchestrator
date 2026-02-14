@@ -250,25 +250,56 @@ def cmd_route(args: argparse.Namespace) -> None:
         print(f"- {c['agentId']}: score={c['score']} hits={','.join(c['hits']) or '-'}")
 
 
+def _pick_candidate_by_tag(candidates: list[dict[str, Any]], tag: str) -> str | None:
+    for c in candidates:
+        if tag in (c.get("tags") or []):
+            return c.get("agentId")
+    return None
+
+
 def cmd_plan(args: argparse.Namespace) -> None:
     ensure_dirs()
     pf = project_file(args.project)
     proj = load_json(pf)
     req = (proj.get("routing", {}).get("request") or "").lower()
     selected = proj.get("routing", {}).get("selected")
+    candidates = proj.get("routing", {}).get("candidates", [])
     if not selected:
         die("run route first")
 
     resolved = "single"
-    # Conservative default; only escalate when explicit multi-stage keywords found.
-    if any(k in req for k in ["并行", "dag", "pipeline", "多阶段", "先", "然后", "再"]):
+    if args.mode in ("single", "linear", "dag", "debate"):
+        resolved = args.mode
+    elif any(k in req for k in ["并行", "dag", "pipeline", "多阶段"]):
+        resolved = "dag"
+    elif any(k in req for k in ["先", "然后", "再", "步骤"]):
         resolved = "linear"
 
-    tasks = []
+    tasks: list[dict[str, Any]] = []
     if resolved == "single":
         tasks.append({"id": "main", "agentId": selected, "type": "execute", "status": "pending", "retry": 0})
+    elif resolved == "linear":
+        # Conservative chain: owner first; optional test/docs stages when text indicates.
+        tasks.append({"id": "stage-1", "agentId": selected, "type": "execute", "status": "pending", "retry": 0, "dependsOn": []})
+        stage_n = 2
+        if any(k in req for k in ["测试", "test", "coverage", "pytest"]):
+            aid = _pick_candidate_by_tag(candidates, "testing") or selected
+            tasks.append({"id": f"stage-{stage_n}", "agentId": aid, "type": "execute", "status": "pending", "retry": 0, "dependsOn": ["stage-1"]})
+            stage_n += 1
+        if any(k in req for k in ["文档", "docs", "readme", "说明"]):
+            dep = f"stage-{stage_n-1}" if stage_n > 2 else "stage-1"
+            aid = _pick_candidate_by_tag(candidates, "docs") or selected
+            tasks.append({"id": f"stage-{stage_n}", "agentId": aid, "type": "execute", "status": "pending", "retry": 0, "dependsOn": [dep]})
+    elif resolved == "dag":
+        # Minimal DAG: owner + optional complementary branch.
+        tasks.append({"id": "main", "agentId": selected, "type": "execute", "status": "pending", "retry": 0, "dependsOn": []})
+        if any(k in req for k in ["测试", "test", "coverage", "文档", "docs"]):
+            comp = _pick_candidate_by_tag(candidates, "testing") or _pick_candidate_by_tag(candidates, "docs")
+            if comp and comp != selected:
+                tasks.append({"id": "parallel-1", "agentId": comp, "type": "execute", "status": "pending", "retry": 0, "dependsOn": []})
     else:
-        tasks.append({"id": "stage-1", "agentId": selected, "type": "execute", "status": "pending", "retry": 0})
+        # debate placeholder: keep one task but mark plan mode.
+        tasks.append({"id": "debate-1", "agentId": selected, "type": "debate", "status": "pending", "retry": 0})
 
     proj["plan"] = {
         "mode": args.mode,
@@ -322,9 +353,17 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
     if not tasks:
         die("no tasks; run plan first")
 
-    pending = [(tid, t) for tid, t in tasks.items() if t.get("status") in ("pending", "retry-pending")]
+    def deps_done(t: dict[str, Any]) -> bool:
+        deps = t.get("dependsOn", []) or []
+        return all(tasks.get(d, {}).get("status") == "done" for d in deps)
+
+    pending = [
+        (tid, t)
+        for tid, t in tasks.items()
+        if t.get("status") in ("pending", "retry-pending") and deps_done(t)
+    ]
     if not pending:
-        print("No dispatchable tasks.")
+        print("No dispatchable tasks (waiting dependencies or all completed).")
         return
 
     for tid, t in pending:
@@ -395,6 +434,54 @@ def cmd_confirm(args: argparse.Namespace) -> None:
     print(f"✅ human confirmation recorded: {args.task_id} can be dispatched again")
 
 
+def cmd_relay(args: argparse.Namespace) -> None:
+    _, proj = _load_project_or_die(args.project)
+    task = proj.get("tasks", {}).get(args.task_id)
+    if not task:
+        die(f"task not found: {args.task_id}")
+
+    mode = args.mode
+    if mode == "dispatch":
+        msg = (
+            f"📋 **任务派发**\n"
+            f"项目: {proj.get('project')}\n"
+            f"任务: {args.task_id}\n"
+            f"Agent: {task.get('agentId')}\n"
+            f"请求: {proj.get('routing', {}).get('request', proj.get('goal', ''))}"
+        )
+    else:
+        msg = (
+            f"✅ **任务完成**\n"
+            f"项目: {proj.get('project')}\n"
+            f"任务: {args.task_id}\n"
+            f"结果(原样输出):\n{task.get('output', '')}"
+        )
+
+    print("message payload (copy):")
+    print(json.dumps({"action": "send", "target": args.channel_id, "message": msg}, ensure_ascii=False, indent=2))
+
+
+def cmd_list(args: argparse.Namespace) -> None:
+    ensure_dirs()
+    files = sorted(PROJECTS_DIR.glob("*.json"))
+    if not files:
+        print("No projects.")
+        return
+    for f in files:
+        p = load_json(f, default={})
+        print(f"- {p.get('project', f.stem)} [{p.get('status','?')}] mode={p.get('plan',{}).get('resolvedMode')}")
+
+
+def cmd_audit(args: argparse.Namespace) -> None:
+    _, proj = _load_project_or_die(args.project)
+    audit = proj.get("audit", [])
+    if not audit:
+        print("No audit events.")
+        return
+    for item in audit[-args.tail:]:
+        print(f"[{item.get('time')}] {item.get('event')}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="agent-orchestrator v1")
     sub = p.add_subparsers(dest="cmd")
@@ -446,6 +533,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("project")
     sp.add_argument("task_id")
 
+    sp = sub.add_parser("relay", help="print message relay payload (dispatch|done)")
+    sp.add_argument("project")
+    sp.add_argument("task_id")
+    sp.add_argument("channel_id", help="target Discord channel id")
+    sp.add_argument("--mode", choices=["dispatch", "done"], default="dispatch")
+
+    sub.add_parser("list", help="list projects")
+
+    sp = sub.add_parser("audit", help="show project audit trail")
+    sp.add_argument("project")
+    sp.add_argument("--tail", type=int, default=30)
+
     return p
 
 
@@ -476,6 +575,12 @@ def main() -> None:
         cmd_fail(args)
     elif args.cmd == "confirm":
         cmd_confirm(args)
+    elif args.cmd == "relay":
+        cmd_relay(args)
+    elif args.cmd == "list":
+        cmd_list(args)
+    elif args.cmd == "audit":
+        cmd_audit(args)
     else:
         parser.print_help()
         raise SystemExit(1)
