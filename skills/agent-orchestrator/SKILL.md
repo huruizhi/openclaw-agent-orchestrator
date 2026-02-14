@@ -58,8 +58,15 @@ $AO relay auth-hardening main 1470703478627237899 --mode done
 
 # 10) Inspect state
 $AO status auth-hardening --json
+$AO show auth-hardening
 $AO audit auth-hardening --tail 20
 $AO list
+
+# 11) Debate flow (optional)
+$AO debate auth-hardening start
+$AO debate auth-hardening collect work "我的观点..."
+$AO debate auth-hardening review
+$AO debate auth-hardening synthesize
 ```
 
 ## Policy Defaults (v1)

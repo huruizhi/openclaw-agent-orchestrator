@@ -165,6 +165,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         "routing": {"request": "", "candidates": [], "selected": None, "reason": ""},
         "plan": {"mode": "auto", "resolvedMode": None, "tasks": []},
         "tasks": {},
+        "debate": {"enabled": False, "round": 0, "state": "idle", "responses": {}, "reviews": {}},
         "audit": [{"time": now_iso(), "event": "project initialized"}],
     }
     save_json(pf, data)
@@ -472,6 +473,80 @@ def cmd_list(args: argparse.Namespace) -> None:
         print(f"- {p.get('project', f.stem)} [{p.get('status','?')}] mode={p.get('plan',{}).get('resolvedMode')}")
 
 
+def cmd_show(args: argparse.Namespace) -> None:
+    _, proj = _load_project_or_die(args.project)
+    print(f"Project: {proj.get('project')}")
+    print(f"Goal: {proj.get('goal','')}")
+    print(f"Status: {proj.get('status','active')}")
+    if proj.get("routing", {}).get("selected"):
+        print(f"Selected agent: {proj['routing']['selected']}")
+    print("Tasks:")
+    for tid, t in (proj.get("tasks") or {}).items():
+        deps = t.get("dependsOn", [])
+        dep_txt = f" deps={deps}" if deps else ""
+        print(f"  - {tid}: {t.get('agentId')} {t.get('status')} retry={t.get('retry',0)}{dep_txt}")
+
+
+def cmd_debate(args: argparse.Namespace) -> None:
+    pf, proj = _load_project_or_die(args.project)
+    candidates = proj.get("routing", {}).get("candidates", [])
+    selected = [c.get("agentId") for c in candidates[:3] if c.get("agentId")]
+    if not selected and proj.get("routing", {}).get("selected"):
+        selected = [proj["routing"]["selected"]]
+    if not selected:
+        die("run route first")
+
+    debate = proj.setdefault("debate", {"enabled": True, "round": 0, "state": "idle", "responses": {}, "reviews": {}})
+
+    if args.action == "start":
+        debate["enabled"] = True
+        debate["round"] = 1
+        debate["state"] = "collecting"
+        debate["agents"] = selected
+        debate["responses"] = {}
+        debate["reviews"] = {}
+        _save_project_with_audit(pf, proj, f"debate started with {','.join(selected)}")
+        print("Debate round started. Dispatch prompts:")
+        for aid in selected:
+            print(json.dumps({"agentId": aid, "label": f"ao:{proj['project']}:debate:r1:{aid}", "task": proj.get("routing", {}).get("request", proj.get("goal", ""))}, ensure_ascii=False))
+        return
+
+    if args.action == "collect":
+        if not args.agent_id or args.content is None:
+            die("collect requires agent_id and content")
+        if args.agent_id not in set(debate.get("agents", [])):
+            die(f"agent not in active debate: {args.agent_id}")
+        debate.setdefault("responses", {})[args.agent_id] = args.content
+        if set(debate.get("responses", {}).keys()) >= set(debate.get("agents", [])):
+            debate["state"] = "ready-review"
+        _save_project_with_audit(pf, proj, f"debate collect from {args.agent_id}")
+        print(f"collected response: {args.agent_id}")
+        return
+
+    if args.action == "review":
+        if debate.get("state") not in ("ready-review", "reviewing"):
+            die("debate not ready for review")
+        debate["state"] = "reviewing"
+        _save_project_with_audit(pf, proj, "debate review prompts generated")
+        for aid in debate.get("agents", []):
+            others = {k: v for k, v in debate.get("responses", {}).items() if k != aid}
+            print(f"\n[review prompt for {aid}]")
+            print(f"Your previous response: {debate.get('responses',{}).get(aid,'')}")
+            print("Others:")
+            for k, v in others.items():
+                print(f"- {k}: {v}")
+        return
+
+    if args.action == "synthesize":
+        debate["state"] = "synthesized"
+        _save_project_with_audit(pf, proj, "debate synthesized")
+        print("Synthesis package:")
+        print(json.dumps({"responses": debate.get("responses", {}), "reviews": debate.get("reviews", {})}, ensure_ascii=False, indent=2))
+        return
+
+    die("unknown debate action")
+
+
 def cmd_audit(args: argparse.Namespace) -> None:
     _, proj = _load_project_or_die(args.project)
     audit = proj.get("audit", [])
@@ -541,6 +616,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("list", help="list projects")
 
+    sp = sub.add_parser("show", help="show concise project details")
+    sp.add_argument("project")
+
+    sp = sub.add_parser("debate", help="debate lifecycle: start|collect|review|synthesize")
+    sp.add_argument("project")
+    sp.add_argument("action", choices=["start", "collect", "review", "synthesize"])
+    sp.add_argument("agent_id", nargs="?")
+    sp.add_argument("content", nargs="?")
+
     sp = sub.add_parser("audit", help="show project audit trail")
     sp.add_argument("project")
     sp.add_argument("--tail", type=int, default=30)
@@ -579,6 +663,10 @@ def main() -> None:
         cmd_relay(args)
     elif args.cmd == "list":
         cmd_list(args)
+    elif args.cmd == "show":
+        cmd_show(args)
+    elif args.cmd == "debate":
+        cmd_debate(args)
     elif args.cmd == "audit":
         cmd_audit(args)
     else:
