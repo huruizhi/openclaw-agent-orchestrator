@@ -390,6 +390,21 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
     _save_project_with_audit(pf, proj, f"dispatch {len(pending)} task(s)")
 
 
+def _refresh_project_status(proj: dict[str, Any]) -> None:
+    tasks = proj.get("tasks", {}) or {}
+    if not tasks:
+        return
+    statuses = [t.get("status") for t in tasks.values()]
+    if all(s == "done" for s in statuses):
+        proj["status"] = "completed"
+    elif any(t.get("needsHumanConfirmation") for t in tasks.values()):
+        proj["status"] = "needs-human-confirmation"
+    elif any(s == "in-progress" for s in statuses):
+        proj["status"] = "active"
+    elif any(s in ("pending", "retry-pending") for s in statuses):
+        proj["status"] = "active"
+
+
 def cmd_collect(args: argparse.Namespace) -> None:
     pf, proj = _load_project_or_die(args.project)
     task = proj.get("tasks", {}).get(args.task_id)
@@ -399,6 +414,7 @@ def cmd_collect(args: argparse.Namespace) -> None:
     task["output"] = args.output
     task["status"] = "done"
     task["completedAt"] = now_iso()
+    _refresh_project_status(proj)
     _save_project_with_audit(pf, proj, f"collect {args.task_id} done")
     print(f"✅ collected raw output for {args.task_id}")
 
@@ -417,11 +433,12 @@ def cmd_fail(args: argparse.Namespace) -> None:
     if retry >= max_retries:
         task["status"] = "failed"
         task["needsHumanConfirmation"] = True
-        proj["status"] = "needs-human-confirmation"
+        _refresh_project_status(proj)
         _save_project_with_audit(pf, proj, f"task {args.task_id} failed after {retry} retries")
         print(f"⚠ {args.task_id} reached retry limit ({retry}/{max_retries}); waiting for human confirmation")
     else:
         task["status"] = "retry-pending"
+        _refresh_project_status(proj)
         _save_project_with_audit(pf, proj, f"task {args.task_id} retry {retry}/{max_retries}")
         print(f"↻ {args.task_id} marked retry-pending ({retry}/{max_retries})")
 
@@ -437,7 +454,7 @@ def cmd_confirm(args: argparse.Namespace) -> None:
 
     task["needsHumanConfirmation"] = False
     task["status"] = "retry-pending"
-    proj["status"] = "active"
+    _refresh_project_status(proj)
     _save_project_with_audit(pf, proj, f"human confirmed retry for {args.task_id}")
     print(f"✅ human confirmation recorded: {args.task_id} can be dispatched again")
 
@@ -467,6 +484,34 @@ def cmd_relay(args: argparse.Namespace) -> None:
 
     print("message payload (copy):")
     print(json.dumps({"action": "send", "target": args.channel_id, "message": msg}, ensure_ascii=False, indent=2))
+
+
+def cmd_next(args: argparse.Namespace) -> None:
+    _, proj = _load_project_or_die(args.project)
+    tasks = proj.get("tasks", {}) or {}
+    if not tasks:
+        print("No tasks. Run plan first.")
+        return
+
+    def deps_done(t: dict[str, Any]) -> bool:
+        deps = t.get("dependsOn", []) or []
+        return all(tasks.get(d, {}).get("status") == "done" for d in deps)
+
+    ready = [
+        {"taskId": tid, "agentId": t.get("agentId"), "status": t.get("status"), "dependsOn": t.get("dependsOn", [])}
+        for tid, t in tasks.items()
+        if t.get("status") in ("pending", "retry-pending") and deps_done(t)
+    ]
+    if args.json:
+        print(json.dumps(ready, ensure_ascii=False, indent=2))
+        return
+    if not ready:
+        print("No dispatchable tasks right now.")
+        return
+    print("Dispatchable tasks:")
+    for r in ready:
+        dep = f" deps={r['dependsOn']}" if r["dependsOn"] else ""
+        print(f"- {r['taskId']}: agent={r['agentId']} status={r['status']}{dep}")
 
 
 def cmd_list(args: argparse.Namespace) -> None:
@@ -623,6 +668,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("project")
     sp.add_argument("--json", "-j", action="store_true")
 
+    sp = sub.add_parser("next", help="show dispatchable tasks")
+    sp.add_argument("project")
+    sp.add_argument("--json", "-j", action="store_true")
+
     sp = sub.add_parser("dispatch", help="mark dispatchable tasks in-progress and print sessions_spawn payload")
     sp.add_argument("project")
     sp.add_argument("--task", default="", help="override task text")
@@ -684,6 +733,8 @@ def main() -> None:
         cmd_plan(args)
     elif args.cmd == "status":
         cmd_status(args)
+    elif args.cmd == "next":
+        cmd_next(args)
     elif args.cmd == "dispatch":
         cmd_dispatch(args)
     elif args.cmd == "collect":
