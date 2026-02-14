@@ -39,13 +39,16 @@ $AO init auth-hardening --goal "Harden auth module" --notify-target 147070347862
 # 4) Route natural-language request
 $AO route auth-hardening --request "分析 auth 模块安全风险并给出修复方案"
 
-# 5) Build conservative plan
+# 5) Build conservative plan (会先发送编排摘要并等待审计通过)
 $AO plan auth-hardening --mode auto
 
-# 6) Check ready tasks
+# 6) 审计确认（必需）
+$AO approve auth-hardening --by rzhu
+
+# 7) Check ready tasks
 $AO next auth-hardening
 
-# 7) Dispatch (prints sessions_spawn payload)
+# 8) Dispatch (prints sessions_spawn payload)
 $AO dispatch auth-hardening
 $AO dispatch auth-hardening --only-task stage-2 --out-json /tmp/ao-dispatch.json
 $AO dispatch auth-hardening --execute --thinking low
@@ -90,7 +93,9 @@ $AO debate auth-hardening synthesize
 ## Notes
 
 - 默认通知开启：dispatch / collect / fail(上限) / confirm 都会发送通知。
+- 派发/完成通知优先发送到“被派发 agent 的绑定频道”（读取 openclaw bindings）；找不到时回退到项目默认通知目标。
 - 可通过 `init --notify-target/--notify-channel` 指定通知目标，或使用环境变量 `AO_NOTIFY_TARGET` / `AO_NOTIFY_CHANNEL`。
 - 兼容旧项目：可用 `notify` 命令补充通知配置。
 - 通知机制借鉴 `discord-notify`：优先 `openclaw message send`（带重试），失败时回退到 `discord-notify` 脚本链路。
+- 计划生成后默认进入 `awaiting-approval`，需 `approve` 后才允许 `dispatch`。
 - v1 focuses on profile management, routing, planning, and execution scaffolding.

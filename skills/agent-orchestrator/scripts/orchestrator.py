@@ -315,11 +315,28 @@ def cmd_plan(args: argparse.Namespace) -> None:
         "plannedAt": now_iso(),
     }
     proj["tasks"] = {t["id"]: {**t, "output": "", "needsHumanConfirmation": False} for t in tasks}
+    proj["approval"] = {
+        "required": True,
+        "state": "pending",
+        "approvedAt": None,
+        "approvedBy": None,
+        "note": "Require user audit confirmation before dispatch",
+    }
+    proj["status"] = "awaiting-approval"
     proj["updatedAt"] = now_iso()
     proj.setdefault("audit", []).append({"time": now_iso(), "event": f"plan resolved mode={resolved}"})
+
+    summary = [f"任务编排已生成（mode={resolved}）", f"项目: {proj.get('project')}", "编排任务:"]
+    for t in tasks:
+        deps = t.get("dependsOn", [])
+        dep_txt = f" deps={deps}" if deps else ""
+        summary.append(f"- {t['id']}: {t['agentId']}{dep_txt}")
+    summary.append("请先执行: ao approve <project> --by <name>，再进行 dispatch")
+    _notify(proj, "\n".join(summary))
+
     save_json(pf, proj)
 
-    print(f"✅ plan ready: {resolved}, tasks={len(tasks)}")
+    print(f"✅ plan ready: {resolved}, tasks={len(tasks)} (awaiting approval)")
 
 
 def cmd_status(args: argparse.Namespace) -> None:
@@ -335,6 +352,9 @@ def cmd_status(args: argparse.Namespace) -> None:
     p = proj.get("plan", {})
     if p.get("resolvedMode"):
         print(f"plan: {p['resolvedMode']} tasks={len(p.get('tasks',[]))}")
+    approval = proj.get("approval", {})
+    if approval.get("required"):
+        print(f"approval: {approval.get('state','pending')}")
     if proj.get("tasks"):
         print("tasks:")
         for tid, t in proj["tasks"].items():
@@ -361,8 +381,35 @@ def _save_project_with_audit(pf: Path, proj: dict[str, Any], event: str) -> None
     save_json(pf, proj)
 
 
+def cmd_approve(args: argparse.Namespace) -> None:
+    pf, proj = _load_project_or_die(args.project)
+    approval = proj.setdefault("approval", {"required": True, "state": "pending"})
+    approval["required"] = True
+    approval["state"] = "approved"
+    approval["approvedAt"] = now_iso()
+    approval["approvedBy"] = args.by or "unknown"
+    if proj.get("status") == "awaiting-approval":
+        proj["status"] = "active"
+
+    _notify(
+        proj,
+        (
+            f"✅ **任务编排已审计通过**\n"
+            f"项目: {proj.get('project')}\n"
+            f"审计人: {approval['approvedBy']}\n"
+            f"可进入任务派发流程"
+        ),
+    )
+    _save_project_with_audit(pf, proj, f"approval granted by {approval['approvedBy']}")
+    print("✅ approval granted")
+
+
 def cmd_dispatch(args: argparse.Namespace) -> None:
     pf, proj = _load_project_or_die(args.project)
+    approval = proj.get("approval", {}) or {}
+    if approval.get("required", False) and approval.get("state") != "approved":
+        die("project is awaiting audit approval; run: ao approve <project> --by <name>")
+
     tasks = proj.get("tasks", {})
     if not tasks:
         die("no tasks; run plan first")
@@ -408,6 +455,7 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
                 f"Agent: {t.get('agentId')}\n"
                 f"请求: {task_text}"
             ),
+            agent_id=str(t.get("agentId") or ""),
         )
 
         if args.execute:
@@ -435,6 +483,7 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
                     f"任务: {tid}\n"
                     f"结果(原样输出):\n{raw}"
                 ),
+                agent_id=str(t.get("agentId") or ""),
             )
             print(f"auto-executed via openclaw agent: {tid} -> done")
 
@@ -469,19 +518,44 @@ def _chunk_text(s: str, n: int) -> list[str]:
     return out
 
 
-def _notify(proj: dict[str, Any], msg: str, max_chars: int = 1800) -> None:
+def _resolve_agent_bound_target(agent_id: str, channel: str = "discord") -> str:
+    """Resolve bound channel target for agent from openclaw config bindings."""
+    try:
+        cfg = load_json(Path(DEFAULT_CONFIG), default={})
+    except Exception:
+        return ""
+    for b in cfg.get("bindings", []) or []:
+        if not isinstance(b, dict):
+            continue
+        if b.get("agentId") != agent_id:
+            continue
+        m = b.get("match", {}) or {}
+        if m.get("channel") != channel:
+            continue
+        peer = m.get("peer", {}) or {}
+        if peer.get("kind") == "channel" and peer.get("id"):
+            return str(peer.get("id"))
+    return ""
+
+
+def _notify(proj: dict[str, Any], msg: str, max_chars: int = 1800, agent_id: str = "") -> None:
     """Reliable notify path.
 
-    1) openclaw message send with retries
-    2) fallback to discord-notify skill script (which has its own retry/fallback chain)
+    1) route to agent-bound channel when available
+    2) openclaw message send with retries
+    3) fallback to discord-notify skill script
     """
     notify = proj.get("notifications", {}) or {}
     if not notify.get("enabled", True):
         return
 
-    # Backward-compatible defaults for projects created before notifications field existed.
-    target = str((notify.get("target") or os.environ.get("AO_NOTIFY_TARGET") or "")).strip()
     channel = str((notify.get("channel") or os.environ.get("AO_NOTIFY_CHANNEL") or "discord")).strip()
+    target = ""
+    if agent_id:
+        target = _resolve_agent_bound_target(agent_id, channel=channel)
+    if not target:
+        # Backward-compatible defaults for projects created before notifications field existed.
+        target = str((notify.get("target") or os.environ.get("AO_NOTIFY_TARGET") or "")).strip()
     if not target:
         return
 
@@ -575,6 +649,7 @@ def cmd_collect(args: argparse.Namespace) -> None:
             f"任务: {args.task_id}\n"
             f"结果(原样输出):\n{args.output}"
         ),
+        agent_id=str(task.get("agentId") or ""),
     )
     _refresh_project_status(proj)
     _save_project_with_audit(pf, proj, f"collect {args.task_id} done")
@@ -604,6 +679,7 @@ def cmd_fail(args: argparse.Namespace) -> None:
                 f"错误: {args.error}\n"
                 f"已达重试上限: {retry}/{max_retries}"
             ),
+            agent_id=str(task.get("agentId") or ""),
         )
         _refresh_project_status(proj)
         _save_project_with_audit(pf, proj, f"task {args.task_id} failed after {retry} retries")
@@ -634,6 +710,7 @@ def cmd_confirm(args: argparse.Namespace) -> None:
             f"任务: {args.task_id}\n"
             f"状态: retry-pending"
         ),
+        agent_id=str(task.get("agentId") or ""),
     )
     _refresh_project_status(proj)
     _save_project_with_audit(pf, proj, f"human confirmed retry for {args.task_id}")
@@ -991,6 +1068,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("project")
     sp.add_argument("--json", "-j", action="store_true")
 
+    sp = sub.add_parser("approve", help="approve orchestration plan after user audit")
+    sp.add_argument("project")
+    sp.add_argument("--by", default="")
+
     sp = sub.add_parser("dispatch", help="mark dispatchable tasks in-progress and print sessions_spawn payload")
     sp.add_argument("project")
     sp.add_argument("--task", default="", help="override task text")
@@ -1075,6 +1156,8 @@ def main() -> None:
         cmd_status(args)
     elif args.cmd == "next":
         cmd_next(args)
+    elif args.cmd == "approve":
+        cmd_approve(args)
     elif args.cmd == "dispatch":
         cmd_dispatch(args)
     elif args.cmd == "collect":
