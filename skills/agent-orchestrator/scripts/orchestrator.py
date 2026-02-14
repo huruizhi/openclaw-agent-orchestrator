@@ -300,7 +300,99 @@ def cmd_status(args: argparse.Namespace) -> None:
     if proj.get("tasks"):
         print("tasks:")
         for tid, t in proj["tasks"].items():
-            print(f"  - {tid}: {t.get('agentId')} [{t.get('status')}] retry={t.get('retry',0)}")
+            flag = " ⚠confirm" if t.get("needsHumanConfirmation") else ""
+            print(f"  - {tid}: {t.get('agentId')} [{t.get('status')}] retry={t.get('retry',0)}{flag}")
+
+
+def _load_project_or_die(project: str) -> tuple[Path, dict[str, Any]]:
+    pf = project_file(project)
+    proj = load_json(pf)
+    return pf, proj
+
+
+def _save_project_with_audit(pf: Path, proj: dict[str, Any], event: str) -> None:
+    proj["updatedAt"] = now_iso()
+    proj.setdefault("audit", []).append({"time": now_iso(), "event": event})
+    save_json(pf, proj)
+
+
+def cmd_dispatch(args: argparse.Namespace) -> None:
+    pf, proj = _load_project_or_die(args.project)
+    tasks = proj.get("tasks", {})
+    if not tasks:
+        die("no tasks; run plan first")
+
+    pending = [(tid, t) for tid, t in tasks.items() if t.get("status") in ("pending", "retry-pending")]
+    if not pending:
+        print("No dispatchable tasks.")
+        return
+
+    for tid, t in pending:
+        t["status"] = "in-progress"
+        t["dispatchedAt"] = now_iso()
+        task_text = args.task or proj.get("routing", {}).get("request", proj.get("goal", ""))
+        print(f"\n[dispatch {tid}]")
+        print(f"agent: {t.get('agentId')}")
+        print("sessions_spawn payload (copy):")
+        print(json.dumps({
+            "agentId": t.get("agentId"),
+            "label": f"ao:{proj.get('project')}:{tid}",
+            "task": task_text,
+        }, ensure_ascii=False, indent=2))
+
+    _save_project_with_audit(pf, proj, f"dispatch {len(pending)} task(s)")
+
+
+def cmd_collect(args: argparse.Namespace) -> None:
+    pf, proj = _load_project_or_die(args.project)
+    task = proj.get("tasks", {}).get(args.task_id)
+    if not task:
+        die(f"task not found: {args.task_id}")
+
+    task["output"] = args.output
+    task["status"] = "done"
+    task["completedAt"] = now_iso()
+    _save_project_with_audit(pf, proj, f"collect {args.task_id} done")
+    print(f"✅ collected raw output for {args.task_id}")
+
+
+def cmd_fail(args: argparse.Namespace) -> None:
+    pf, proj = _load_project_or_die(args.project)
+    task = proj.get("tasks", {}).get(args.task_id)
+    if not task:
+        die(f"task not found: {args.task_id}")
+
+    max_retries = int(proj.get("policy", {}).get("maxRetries", 3))
+    retry = int(task.get("retry", 0)) + 1
+    task["retry"] = retry
+    task.setdefault("errors", []).append({"time": now_iso(), "error": args.error})
+
+    if retry >= max_retries:
+        task["status"] = "failed"
+        task["needsHumanConfirmation"] = True
+        proj["status"] = "needs-human-confirmation"
+        _save_project_with_audit(pf, proj, f"task {args.task_id} failed after {retry} retries")
+        print(f"⚠ {args.task_id} reached retry limit ({retry}/{max_retries}); waiting for human confirmation")
+    else:
+        task["status"] = "retry-pending"
+        _save_project_with_audit(pf, proj, f"task {args.task_id} retry {retry}/{max_retries}")
+        print(f"↻ {args.task_id} marked retry-pending ({retry}/{max_retries})")
+
+
+def cmd_confirm(args: argparse.Namespace) -> None:
+    pf, proj = _load_project_or_die(args.project)
+    task = proj.get("tasks", {}).get(args.task_id)
+    if not task:
+        die(f"task not found: {args.task_id}")
+    if not task.get("needsHumanConfirmation"):
+        print(f"Task {args.task_id} does not require human confirmation.")
+        return
+
+    task["needsHumanConfirmation"] = False
+    task["status"] = "retry-pending"
+    proj["status"] = "active"
+    _save_project_with_audit(pf, proj, f"human confirmed retry for {args.task_id}")
+    print(f"✅ human confirmation recorded: {args.task_id} can be dispatched again")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -336,6 +428,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("project")
     sp.add_argument("--json", "-j", action="store_true")
 
+    sp = sub.add_parser("dispatch", help="mark dispatchable tasks in-progress and print sessions_spawn payload")
+    sp.add_argument("project")
+    sp.add_argument("--task", default="", help="override task text")
+
+    sp = sub.add_parser("collect", help="collect raw output and mark task done")
+    sp.add_argument("project")
+    sp.add_argument("task_id")
+    sp.add_argument("output")
+
+    sp = sub.add_parser("fail", help="mark task failure and handle retry/confirmation threshold")
+    sp.add_argument("project")
+    sp.add_argument("task_id")
+    sp.add_argument("error")
+
+    sp = sub.add_parser("confirm", help="human confirmation after max retries")
+    sp.add_argument("project")
+    sp.add_argument("task_id")
+
     return p
 
 
@@ -358,6 +468,14 @@ def main() -> None:
         cmd_plan(args)
     elif args.cmd == "status":
         cmd_status(args)
+    elif args.cmd == "dispatch":
+        cmd_dispatch(args)
+    elif args.cmd == "collect":
+        cmd_collect(args)
+    elif args.cmd == "fail":
+        cmd_fail(args)
+    elif args.cmd == "confirm":
+        cmd_confirm(args)
     else:
         parser.print_help()
         raise SystemExit(1)

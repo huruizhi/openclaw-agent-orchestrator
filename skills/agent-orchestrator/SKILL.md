@@ -42,7 +42,17 @@ $AO route auth-hardening --request "分析 auth 模块安全风险并给出修�
 # 5) Build conservative plan
 $AO plan auth-hardening --mode auto
 
-# 6) Inspect state
+# 6) Dispatch (prints sessions_spawn payload)
+$AO dispatch auth-hardening
+
+# 7) Collect raw output
+$AO collect auth-hardening main "<raw worker output>"
+
+# 8) Failure + retry workflow
+$AO fail auth-hardening main "timeout"
+$AO confirm auth-hardening main
+
+# 9) Inspect state
 $AO status auth-hardening --json
 ```
 
