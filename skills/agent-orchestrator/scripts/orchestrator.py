@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -393,11 +394,43 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
         print("sessions_spawn payload (copy):")
         print(json.dumps(payload, ensure_ascii=False, indent=2))
 
+        if args.execute:
+            cmd = [
+                "openclaw",
+                "agent",
+                "--agent",
+                str(t.get("agentId")),
+                "--message",
+                task_text,
+                "--json",
+            ]
+            if args.thinking:
+                cmd.extend(["--thinking", args.thinking])
+            result = _run_json_cmd(cmd)
+            raw = json.dumps(result, ensure_ascii=False)
+            t["status"] = "done"
+            t["completedAt"] = now_iso()
+            t["output"] = raw
+            print(f"auto-executed via openclaw agent: {tid} -> done")
+
     if args.out_json:
         Path(args.out_json).write_text(json.dumps(payloads, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(f"\n✅ wrote dispatch payloads: {args.out_json}")
 
-    _save_project_with_audit(pf, proj, f"dispatch {len(pending)} task(s)")
+    _refresh_project_status(proj)
+    _save_project_with_audit(pf, proj, f"dispatch {len(pending)} task(s){' (executed)' if args.execute else ''}")
+
+
+def _run_json_cmd(cmd: list[str]) -> dict[str, Any]:
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    if p.returncode != 0:
+        die(f"command failed ({' '.join(cmd)}): {p.stderr.strip() or p.stdout.strip()}")
+    raw = p.stdout.strip()
+    try:
+        return json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        # tolerate non-json wrappers, keep raw text
+        return {"raw": raw}
 
 
 def _refresh_project_status(proj: dict[str, Any]) -> None:
@@ -504,15 +537,39 @@ def cmd_relay(args: argparse.Namespace) -> None:
         )
 
     chunks = _chunk_text(msg, args.max_chars)
+    payloads = []
     if len(chunks) == 1:
-        print("message payload (copy):")
-        print(json.dumps({"action": "send", "target": args.channel_id, "message": chunks[0]}, ensure_ascii=False, indent=2))
+        payloads = [{"action": "send", "target": args.channel_id, "message": chunks[0]}]
+    else:
+        for idx, ch in enumerate(chunks, start=1):
+            part_msg = f"[{idx}/{len(chunks)}]\n{ch}"
+            payloads.append({"action": "send", "target": args.channel_id, "message": part_msg})
+
+    if args.execute:
+        for p in payloads:
+            cmd = [
+                "openclaw",
+                "message",
+                "send",
+                "--channel",
+                args.channel,
+                "--target",
+                str(p["target"]),
+                "--message",
+                str(p["message"]),
+                "--json",
+            ]
+            _run_json_cmd(cmd)
+        print(f"✅ sent {len(payloads)} message part(s)")
         return
 
-    print(f"message payloads (copy), parts={len(chunks)}:")
-    for idx, ch in enumerate(chunks, start=1):
-        part_msg = f"[{idx}/{len(chunks)}]\n{ch}"
-        print(json.dumps({"action": "send", "target": args.channel_id, "message": part_msg}, ensure_ascii=False, indent=2))
+    if len(payloads) == 1:
+        print("message payload (copy):")
+        print(json.dumps(payloads[0], ensure_ascii=False, indent=2))
+    else:
+        print(f"message payloads (copy), parts={len(payloads)}:")
+        for p in payloads:
+            print(json.dumps(p, ensure_ascii=False, indent=2))
 
 
 def cmd_next(args: argparse.Namespace) -> None:
@@ -797,6 +854,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--task", default="", help="override task text")
     sp.add_argument("--only-task", default="", help="dispatch only this task id when ready")
     sp.add_argument("--out-json", default="", help="write generated spawn payloads to json file")
+    sp.add_argument("--execute", action="store_true", help="execute immediately via `openclaw agent --json`")
+    sp.add_argument("--thinking", choices=["off", "minimal", "low", "medium", "high"], default="")
 
     sp = sub.add_parser("collect", help="collect raw output and mark task done")
     sp.add_argument("project")
@@ -818,6 +877,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("channel_id", help="target Discord channel id")
     sp.add_argument("--mode", choices=["dispatch", "done"], default="dispatch")
     sp.add_argument("--max-chars", type=int, default=1800, help="chunk message when too long")
+    sp.add_argument("--execute", action="store_true", help="send immediately via `openclaw message send`")
+    sp.add_argument("--channel", default="discord", help="delivery channel when --execute (default: discord)")
 
     sub.add_parser("list", help="list projects")
 

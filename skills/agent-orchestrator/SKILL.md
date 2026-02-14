@@ -48,6 +48,7 @@ $AO next auth-hardening
 # 7) Dispatch (prints sessions_spawn payload)
 $AO dispatch auth-hardening
 $AO dispatch auth-hardening --only-task stage-2 --out-json /tmp/ao-dispatch.json
+$AO dispatch auth-hardening --execute --thinking low
 
 # 8) Collect raw output
 $AO collect auth-hardening main "<raw worker output>"
@@ -59,6 +60,7 @@ $AO confirm auth-hardening main
 # 9) Relay message payloads (dispatch / done)
 $AO relay auth-hardening main 1470703478627237899 --mode dispatch
 $AO relay auth-hardening main 1470703478627237899 --mode done
+$AO relay auth-hardening main 1470703478627237899 --mode done --execute --channel discord
 
 # 10) Inspect state
 $AO status auth-hardening --json
