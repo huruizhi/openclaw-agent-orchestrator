@@ -47,6 +47,7 @@ $AO next auth-hardening
 
 # 7) Dispatch (prints sessions_spawn payload)
 $AO dispatch auth-hardening
+$AO dispatch auth-hardening --only-task stage-2 --out-json /tmp/ao-dispatch.json
 
 # 8) Collect raw output
 $AO collect auth-hardening main "<raw worker output>"

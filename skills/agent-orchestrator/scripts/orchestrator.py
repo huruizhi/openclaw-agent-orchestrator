@@ -370,22 +370,32 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
         for tid, t in tasks.items()
         if t.get("status") in ("pending", "retry-pending") and deps_done(t)
     ]
+    if args.only_task:
+        pending = [(tid, t) for tid, t in pending if tid == args.only_task]
     if not pending:
         print("No dispatchable tasks (waiting dependencies or all completed).")
         return
 
+    payloads: list[dict[str, Any]] = []
     for tid, t in pending:
         t["status"] = "in-progress"
         t["dispatchedAt"] = now_iso()
         task_text = args.task or proj.get("routing", {}).get("request", proj.get("goal", ""))
-        print(f"\n[dispatch {tid}]")
-        print(f"agent: {t.get('agentId')}")
-        print("sessions_spawn payload (copy):")
-        print(json.dumps({
+        payload = {
             "agentId": t.get("agentId"),
             "label": f"ao:{proj.get('project')}:{tid}",
             "task": task_text,
-        }, ensure_ascii=False, indent=2))
+        }
+        payloads.append({"taskId": tid, "payload": payload})
+
+        print(f"\n[dispatch {tid}]")
+        print(f"agent: {t.get('agentId')}")
+        print("sessions_spawn payload (copy):")
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+    if args.out_json:
+        Path(args.out_json).write_text(json.dumps(payloads, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(f"\n✅ wrote dispatch payloads: {args.out_json}")
 
     _save_project_with_audit(pf, proj, f"dispatch {len(pending)} task(s)")
 
@@ -459,6 +469,17 @@ def cmd_confirm(args: argparse.Namespace) -> None:
     print(f"✅ human confirmation recorded: {args.task_id} can be dispatched again")
 
 
+def _chunk_text(s: str, n: int) -> list[str]:
+    if n <= 0 or len(s) <= n:
+        return [s]
+    out = []
+    i = 0
+    while i < len(s):
+        out.append(s[i : i + n])
+        i += n
+    return out
+
+
 def cmd_relay(args: argparse.Namespace) -> None:
     _, proj = _load_project_or_die(args.project)
     task = proj.get("tasks", {}).get(args.task_id)
@@ -482,8 +503,16 @@ def cmd_relay(args: argparse.Namespace) -> None:
             f"结果(原样输出):\n{task.get('output', '')}"
         )
 
-    print("message payload (copy):")
-    print(json.dumps({"action": "send", "target": args.channel_id, "message": msg}, ensure_ascii=False, indent=2))
+    chunks = _chunk_text(msg, args.max_chars)
+    if len(chunks) == 1:
+        print("message payload (copy):")
+        print(json.dumps({"action": "send", "target": args.channel_id, "message": chunks[0]}, ensure_ascii=False, indent=2))
+        return
+
+    print(f"message payloads (copy), parts={len(chunks)}:")
+    for idx, ch in enumerate(chunks, start=1):
+        part_msg = f"[{idx}/{len(chunks)}]\n{ch}"
+        print(json.dumps({"action": "send", "target": args.channel_id, "message": part_msg}, ensure_ascii=False, indent=2))
 
 
 def cmd_next(args: argparse.Namespace) -> None:
@@ -675,6 +704,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("dispatch", help="mark dispatchable tasks in-progress and print sessions_spawn payload")
     sp.add_argument("project")
     sp.add_argument("--task", default="", help="override task text")
+    sp.add_argument("--only-task", default="", help="dispatch only this task id when ready")
+    sp.add_argument("--out-json", default="", help="write generated spawn payloads to json file")
 
     sp = sub.add_parser("collect", help="collect raw output and mark task done")
     sp.add_argument("project")
@@ -695,6 +726,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("task_id")
     sp.add_argument("channel_id", help="target Discord channel id")
     sp.add_argument("--mode", choices=["dispatch", "done"], default="dispatch")
+    sp.add_argument("--max-chars", type=int, default=1800, help="chunk message when too long")
 
     sub.add_parser("list", help="list projects")
 
