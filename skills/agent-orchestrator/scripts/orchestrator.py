@@ -470,29 +470,77 @@ def _chunk_text(s: str, n: int) -> list[str]:
 
 
 def _notify(proj: dict[str, Any], msg: str, max_chars: int = 1800) -> None:
+    """Reliable notify path.
+
+    1) openclaw message send with retries
+    2) fallback to discord-notify skill script (which has its own retry/fallback chain)
+    """
     notify = proj.get("notifications", {}) or {}
     if not notify.get("enabled", True):
         return
-    target = str(notify.get("target", "") or "").strip()
-    channel = str(notify.get("channel", "discord") or "discord")
+
+    # Backward-compatible defaults for projects created before notifications field existed.
+    target = str((notify.get("target") or os.environ.get("AO_NOTIFY_TARGET") or "")).strip()
+    channel = str((notify.get("channel") or os.environ.get("AO_NOTIFY_CHANNEL") or "discord")).strip()
     if not target:
         return
+
     chunks = _chunk_text(msg, max_chars)
     for idx, ch in enumerate(chunks, start=1):
         text = ch if len(chunks) == 1 else f"[{idx}/{len(chunks)}]\n{ch}"
-        cmd = [
-            "openclaw",
-            "message",
-            "send",
-            "--channel",
-            channel,
-            "--target",
-            target,
-            "--message",
-            text,
-            "--json",
-        ]
-        _run_json_cmd(cmd)
+
+        # primary: openclaw message send (3 retries)
+        sent = False
+        last_err = ""
+        for _ in range(3):
+            p = subprocess.run(
+                [
+                    "openclaw",
+                    "message",
+                    "send",
+                    "--channel",
+                    channel,
+                    "--target",
+                    target,
+                    "--message",
+                    text,
+                    "--json",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if p.returncode == 0:
+                sent = True
+                break
+            last_err = p.stderr.strip() or p.stdout.strip()
+
+        if sent:
+            continue
+
+        # fallback: discord-notify skill
+        if channel == "discord":
+            dn = "/home/ubuntu/.openclaw/skills/discord-notify/scripts/discord_notify.py"
+            if os.path.exists(dn):
+                p2 = subprocess.run(
+                    [
+                        "python3",
+                        dn,
+                        "--channel-id",
+                        target,
+                        "--message",
+                        text,
+                        "--job-name",
+                        f"ao-{proj.get('project','unknown')}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                if p2.returncode == 0:
+                    continue
+                last_err = p2.stderr.strip() or p2.stdout.strip() or last_err
+
+        # do not hard-fail orchestration due to notification failure
+        proj.setdefault("audit", []).append({"time": now_iso(), "event": f"notify failed: {last_err}"})
 
 
 def _refresh_project_status(proj: dict[str, Any]) -> None:
@@ -845,6 +893,19 @@ def cmd_validate(args: argparse.Namespace) -> None:
     print("✅ validation passed")
 
 
+def cmd_notify(args: argparse.Namespace) -> None:
+    pf, proj = _load_project_or_die(args.project)
+    notify = proj.setdefault("notifications", {"enabled": True, "channel": "discord", "target": ""})
+    if args.enabled is not None:
+        notify["enabled"] = args.enabled.lower() == "on"
+    if args.channel:
+        notify["channel"] = args.channel
+    if args.target:
+        notify["target"] = args.target
+    _save_project_with_audit(pf, proj, "notifications updated")
+    print(json.dumps(notify, ensure_ascii=False, indent=2))
+
+
 def cmd_runbook(args: argparse.Namespace) -> None:
     _, proj = _load_project_or_die(args.project)
     tasks = proj.get("tasks", {}) or {}
@@ -984,6 +1045,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--channel-id", default="", help="optional relay target channel id")
     sp.add_argument("--out-json", default="", help="output json path")
 
+    sp = sub.add_parser("notify", help="set default notification config for a project")
+    sp.add_argument("project")
+    sp.add_argument("--target", default="", help="notification target id")
+    sp.add_argument("--channel", default="", help="notification channel (default discord)")
+    sp.add_argument("--enabled", choices=["on", "off"], default=None)
+
     return p
 
 
@@ -1030,6 +1097,8 @@ def main() -> None:
         cmd_validate(args)
     elif args.cmd == "runbook":
         cmd_runbook(args)
+    elif args.cmd == "notify":
+        cmd_notify(args)
     else:
         parser.print_help()
         raise SystemExit(1)

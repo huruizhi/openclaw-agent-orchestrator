@@ -67,6 +67,7 @@ $AO status auth-hardening --json
 $AO show auth-hardening
 $AO audit auth-hardening --tail 20
 $AO validate auth-hardening
+$AO notify auth-hardening --target 1470703478627237899 --channel discord --enabled on
 $AO runbook auth-hardening --channel-id 1470703478627237899 --out-json /tmp/ao-runbook.json
 $AO list
 
@@ -90,4 +91,6 @@ $AO debate auth-hardening synthesize
 
 - 默认通知开启：dispatch / collect / fail(上限) / confirm 都会发送通知。
 - 可通过 `init --notify-target/--notify-channel` 指定通知目标，或使用环境变量 `AO_NOTIFY_TARGET` / `AO_NOTIFY_CHANNEL`。
+- 兼容旧项目：可用 `notify` 命令补充通知配置。
+- 通知机制借鉴 `discord-notify`：优先 `openclaw message send`（带重试），失败时回退到 `discord-notify` 脚本链路。
 - v1 focuses on profile management, routing, planning, and execution scaffolding.
