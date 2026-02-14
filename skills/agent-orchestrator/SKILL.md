@@ -93,6 +93,7 @@ $AO debate auth-hardening synthesize
 ## Notes
 
 - 默认通知开启：dispatch / collect / fail(上限) / confirm 都会发送通知。
+- 消息分层：执行 Agent 频道发送详细派发/完成/异常模板；main 频道仅发送流程进度与最终结果。
 - 派发/完成通知优先发送到“被派发 agent 的绑定频道”（读取 openclaw bindings）；找不到时回退到项目默认通知目标。
 - 可通过 `init --notify-target/--notify-channel` 指定通知目标，或使用环境变量 `AO_NOTIFY_TARGET` / `AO_NOTIFY_CHANNEL`。
 - 兼容旧项目：可用 `notify` 命令补充通知配置。
