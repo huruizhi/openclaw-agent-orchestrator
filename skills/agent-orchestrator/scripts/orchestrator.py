@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -986,16 +987,31 @@ def _resolve_agent_bound_target(agent_id: str, channel: str = "discord") -> str:
     return ""
 
 
-def _send_notify(proj: dict[str, Any], channel: str, target: str, msg: str, max_chars: int = 1800) -> None:
+def _send_notify_with_retry(
+    proj: dict[str, Any],
+    channel: str,
+    target: str,
+    msg: str,
+    max_chars: int = 1800,
+    max_retries: int = 3,
+    retry_delays: list[int] | None = None,
+) -> bool:
+    """Send notification with retry logic (inspired by discord-notify)."""
     if not target:
-        return
+        return False
+    
+    if retry_delays is None:
+        retry_delays = [5, 15, 30]
+    
     chunks = _chunk_text(msg, max_chars)
+    
     for idx, ch in enumerate(chunks, start=1):
         text = ch if len(chunks) == 1 else f"[{idx}/{len(chunks)}]\n{ch}"
-
+        
         sent = False
         last_err = ""
-        for _ in range(3):
+        
+        for attempt in range(max_retries):
             p = subprocess.run(
                 [
                     "openclaw",
@@ -1011,15 +1027,24 @@ def _send_notify(proj: dict[str, Any], channel: str, target: str, msg: str, max_
                 ],
                 capture_output=True,
                 text=True,
+                timeout=30,
             )
+            
             if p.returncode == 0:
                 sent = True
                 break
+            
             last_err = p.stderr.strip() or p.stdout.strip()
-
+            
+            # Retry with exponential backoff
+            if attempt < max_retries - 1:
+                delay = retry_delays[min(attempt, len(retry_delays) - 1)]
+                time.sleep(delay)
+        
         if sent:
             continue
-
+        
+        # Fallback to discord-notify script
         if channel == "discord":
             dn = "/home/ubuntu/.openclaw/skills/discord-notify/scripts/discord_notify.py"
             if os.path.exists(dn):
@@ -1033,27 +1058,65 @@ def _send_notify(proj: dict[str, Any], channel: str, target: str, msg: str, max_
                         text,
                         "--job-name",
                         f"ao-{proj.get('project','unknown')}",
+                        "--retry-max",
+                        str(max_retries),
                     ],
                     capture_output=True,
                     text=True,
+                    timeout=60,
                 )
                 if p2.returncode == 0:
                     continue
                 last_err = p2.stderr.strip() or p2.stdout.strip() or last_err
+        
+        # Log failure to audit
+        proj.setdefault("audit", []).append({
+            "time": now_iso(),
+            "event": f"notify failed (after {max_retries} retries): {last_err[:200]}",
+            "channel": channel,
+            "target": target,
+        })
+        return False
+    
+    return True
 
-        proj.setdefault("audit", []).append({"time": now_iso(), "event": f"notify failed: {last_err}"})
+
+def _send_notify(proj: dict[str, Any], channel: str, target: str, msg: str, max_chars: int = 1800) -> None:
+    """Legacy wrapper for backward compatibility."""
+    _send_notify_with_retry(proj, channel, target, msg, max_chars)
 
 
-def _notify_main(proj: dict[str, Any], msg: str, max_chars: int = 1800) -> None:
+def _notify_main(proj: dict[str, Any], msg: str, max_chars: int = 1800, severity: str = "info") -> None:
+    """Send notification to main channel with severity support."""
     notify = proj.get("notifications", {}) or {}
     if not notify.get("enabled", True):
         return
     channel = str((notify.get("channel") or os.environ.get("AO_NOTIFY_CHANNEL") or "discord")).strip()
     target = str((notify.get("target") or os.environ.get("AO_NOTIFY_TARGET") or "")).strip()
-    _send_notify(proj, channel, target, msg, max_chars=max_chars)
+    
+    # Add severity indicator
+    severity_emoji = {
+        "info": "ℹ️",
+        "warn": "⚠️",
+        "error": "❌",
+        "success": "✅",
+    }.get(severity, "")
+    
+    if severity_emoji and not msg.startswith(severity_emoji):
+        msg = f"{severity_emoji} {msg}"
+    
+    success = _send_notify_with_retry(proj, channel, target, msg, max_chars)
+    
+    # Log notification status
+    if not success:
+        proj.setdefault("audit", []).append({
+            "time": now_iso(),
+            "event": f"main notification failed (severity={severity})",
+        })
 
 
-def _notify_agent(proj: dict[str, Any], agent_id: str, msg: str, max_chars: int = 1800) -> None:
+def _notify_agent(proj: dict[str, Any], agent_id: str, msg: str, max_chars: int = 1800, severity: str = "info") -> None:
+    """Send notification to agent channel with severity support."""
     notify = proj.get("notifications", {}) or {}
     if not notify.get("enabled", True):
         return
@@ -1061,7 +1124,24 @@ def _notify_agent(proj: dict[str, Any], agent_id: str, msg: str, max_chars: int 
     target = _resolve_agent_bound_target(agent_id, channel=channel)
     if not target:
         target = str((notify.get("target") or os.environ.get("AO_NOTIFY_TARGET") or "")).strip()
-    _send_notify(proj, channel, target, msg, max_chars=max_chars)
+    
+    # Add severity indicator
+    severity_emoji = {
+        "info": "ℹ️",
+        "warn": "⚠️",
+        "error": "❌",
+        "success": "✅",
+    }.get(severity, "")
+    
+    if severity_emoji and not msg.startswith(severity_emoji):
+        msg = f"{severity_emoji} {msg}"
+    
+    success = _send_notify_with_retry(proj, channel, target, msg, max_chars)
+    
+    # Fallback: if agent notification fails, notify main channel
+    if not success:
+        fallback_msg = f"⚠️ Failed to notify agent {agent_id}, check audit log"
+        _notify_main(proj, fallback_msg, severity="warn")
 
 
 def _refresh_project_status(proj: dict[str, Any]) -> None:
@@ -1143,6 +1223,22 @@ def cmd_execute_task(args: argparse.Namespace) -> None:
             task["status"] = "failed"
             task["error"] = result["error"]
             task["failedAt"] = now_iso()
+            
+            # Notify agent channel - task failed
+            fail_msg = _render_template(
+                proj,
+                "agent_fail",
+                {
+                    "project": proj.get("project"),
+                    "task_id": args.task_id,
+                    "agent_id": agent_id,
+                    "retry": task.get("retry", 0) + 1,
+                    "max_retries": int(proj.get("policy", {}).get("maxRetries", 3)),
+                    "error": result["error"][:300],
+                },
+            )
+            _notify_agent(proj, str(agent_id or ""), fail_msg, severity="error")
+            
             _save_project_with_audit(pf, proj, f"task {args.task_id} failed: {result['error']}")
             print(f"❌ Task {args.task_id} failed: {result['error']}")
             return
@@ -1164,7 +1260,7 @@ def cmd_execute_task(args: argparse.Namespace) -> None:
                     "raw_output": task["output"][:500],
                 },
             )
-            _notify_agent(proj, str(agent_id or ""), done_msg)
+            _notify_agent(proj, str(agent_id or ""), done_msg, severity="success")
             notified["done"] = now_iso()
         
         # Notify main channel
@@ -1179,6 +1275,7 @@ def cmd_execute_task(args: argparse.Namespace) -> None:
                     "agent_id": agent_id,
                 },
             ),
+            severity="success",
         )
         
         _refresh_project_status(proj)
@@ -1198,6 +1295,22 @@ def cmd_execute_task(args: argparse.Namespace) -> None:
         task["status"] = "failed"
         task["error"] = str(e)
         task["failedAt"] = now_iso()
+        
+        # Notify agent channel - exception
+        exc_msg = _render_template(
+            proj,
+            "agent_fail",
+            {
+                "project": proj.get("project"),
+                "task_id": args.task_id,
+                "agent_id": agent_id,
+                "retry": task.get("retry", 0) + 1,
+                "max_retries": int(proj.get("policy", {}).get("maxRetries", 3)),
+                "error": str(e)[:300],
+            },
+        )
+        _notify_agent(proj, str(agent_id or ""), exc_msg, severity="error")
+        
         _save_project_with_audit(pf, proj, f"task {args.task_id} failed with exception: {e}")
         print(f"❌ Task {args.task_id} failed with exception: {e}")
 
@@ -1282,7 +1395,7 @@ def cmd_run(args: argparse.Namespace) -> None:
                     "time": t["startedAt"],
                 },
             )
-            _notify_agent(proj, str(agent_id or ""), dispatch_msg)
+            _notify_agent(proj, str(agent_id or ""), dispatch_msg, severity="info")
             notified["dispatch"] = now_iso()
         
         # Execute via sessions_spawn
@@ -1306,10 +1419,25 @@ def cmd_run(args: argparse.Namespace) -> None:
                 t["error"] = result["error"]
                 t["failedAt"] = now_iso()
                 
-                # Check retry policy
+                # Notify agent channel - task failed
                 max_retries = int(proj.get("policy", {}).get("maxRetries", 3))
                 retry_count = t.get("retry", 0)
                 
+                fail_msg = _render_template(
+                    proj,
+                    "agent_fail",
+                    {
+                        "project": proj.get("project"),
+                        "task_id": tid,
+                        "agent_id": agent_id,
+                        "retry": retry_count + 1,
+                        "max_retries": max_retries,
+                        "error": result["error"][:300],
+                    },
+                )
+                _notify_agent(proj, str(agent_id or ""), fail_msg, severity="error")
+                
+                # Check retry policy
                 if retry_count < max_retries:
                     t["retry"] = retry_count + 1
                     t["status"] = "retry-pending"
@@ -1320,6 +1448,20 @@ def cmd_run(args: argparse.Namespace) -> None:
                 else:
                     print(f"❌ Task {tid} failed after {max_retries} retries: {result['error']}")
                     _save_project_with_audit(pf, proj, f"task {tid} failed after max retries")
+                    
+                    # Notify main channel
+                    _notify_main(
+                        proj,
+                        _render_template(
+                            proj,
+                            "main_fail",
+                            {
+                                "project": proj.get("project"),
+                                "task_id": tid,
+                            },
+                        ),
+                        severity="error",
+                    )
                     
                     if proj.get("policy", {}).get("humanConfirmAfterMaxRetries", True):
                         proj["status"] = "needs-human-confirmation"
@@ -1350,7 +1492,7 @@ def cmd_run(args: argparse.Namespace) -> None:
                             "raw_output": t["output"][:500],
                         },
                     )
-                    _notify_agent(proj, str(agent_id or ""), done_msg)
+                    _notify_agent(proj, str(agent_id or ""), done_msg, severity="success")
                     notified["done"] = now_iso()
                 
                 # Notify main channel
@@ -1365,6 +1507,7 @@ def cmd_run(args: argparse.Namespace) -> None:
                             "agent_id": agent_id,
                         },
                     ),
+                    severity="success",
                 )
                 
                 print(f"✅ Task {tid} completed successfully")
@@ -1374,6 +1517,22 @@ def cmd_run(args: argparse.Namespace) -> None:
             t["status"] = "failed"
             t["error"] = str(e)
             t["failedAt"] = now_iso()
+            
+            # Notify agent channel - exception
+            exc_msg = _render_template(
+                proj,
+                "agent_fail",
+                {
+                    "project": proj.get("project"),
+                    "task_id": tid,
+                    "agent_id": agent_id,
+                    "retry": t.get("retry", 0) + 1,
+                    "max_retries": int(proj.get("policy", {}).get("maxRetries", 3)),
+                    "error": str(e)[:300],
+                },
+            )
+            _notify_agent(proj, str(agent_id or ""), exc_msg, severity="error")
+            
             print(f"❌ Task {tid} failed with exception: {e}")
             _save_project_with_audit(pf, proj, f"task {tid} failed with exception")
             return
