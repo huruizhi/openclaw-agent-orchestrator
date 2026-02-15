@@ -13,9 +13,11 @@ $AO route my-project --request "request"
 $AO run my-project --auto-approve
 ```
 
-## 🆕 独立任务拆解工具
+## 🆕 独立任务工具
 
-**无需创建项目即可快速分解任务！**
+### 1. Task Decomposer（任务拆解器）
+
+**灵活的任务分解，支持抽象行为**
 
 ```bash
 # 设置别名
@@ -27,14 +29,35 @@ decompose "开发用户认证模块，测试，写文档"
 # JSON 输出
 decompose --json "调研市场数据"
 
-# 查看支持的能力
-decompose --capabilities
-
 # 交互模式
 decompose --interactive
 ```
 
 📖 **详细文档**: [TASK_DECOMPOSER_GUIDE.md](./TASK_DECOMPOSER_GUIDE.md)
+
+### 2. Task Compiler（任务编译器）⭐ 新
+
+**严格的任务编译，只接受可执行动作**
+
+```bash
+# 设置别名
+alias compile="python3 /home/ubuntu/clawd/skills/agent-orchestrator/scripts/task_compiler.py"
+
+# 编译可执行任务
+compile "提取日志中的错误信息"
+compile "生成测试报告"
+compile "部署应用到生产环境"
+
+# 检查任务描述是否合规
+compile --check "分析代码结构"  # ❌ 包含禁止词汇
+compile --check "提取代码结构"  # ✅ 符合规范
+```
+
+**规则**:
+- ✅ 允许: 提取/生成/执行/部署/配置
+- ❌ 禁止: 分析/研究/思考/优化/讨论
+
+📖 **详细文档**: [TASK_COMPILER_GUIDE.md](./TASK_COMPILER_GUIDE.md)
 
 ## Commands
 
