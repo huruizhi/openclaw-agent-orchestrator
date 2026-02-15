@@ -331,28 +331,42 @@ def _task_node_id(task_id: str) -> str:
 def _tasks_mermaid(proj: dict[str, Any]) -> str:
     tasks = proj.get("tasks", {}) or {}
     lines = ["flowchart TD"]
+
+    # Keep Route/Plan summary nodes as requested.
+    selected = (proj.get("routing", {}) or {}).get("selected", "")
+    mode = (proj.get("plan", {}) or {}).get("resolvedMode", "")
+    route_label = f"Route: {selected}" if selected else "Route"
+    plan_label = f"Plan: {mode}" if mode else "Plan"
+    lines.append(f"  route[\"{route_label}\"]")
+    lines.append(f"  plan[\"{plan_label}\"]")
+    lines.append("  route --> plan")
+
     if not tasks:
         lines.append("  empty[\"(no tasks)\"]")
+        lines.append("  plan --> empty")
         return "\n".join(lines)
 
-    # Nodes: only real tasks
+    # Nodes: real tasks
     for tid, t in tasks.items():
         nid = _task_node_id(tid)
         label = f"{tid}: {t.get('agentId','')}"
         lines.append(f"  {nid}[\"{label}\"]")
 
-    # Edges: dependencies only
-    edge_count = 0
+    # Edges: dependencies
+    dependent_tasks: set[str] = set()
     for tid, t in tasks.items():
         to_id = _task_node_id(tid)
         for dep in (t.get("dependsOn", []) or []):
             if dep in tasks:
                 from_id = _task_node_id(dep)
                 lines.append(f"  {from_id} --> {to_id}")
-                edge_count += 1
+                dependent_tasks.add(tid)
 
-    # If no dependencies, keep only task nodes (no helper nodes added)
-    _ = edge_count
+    # Plan connects to entry tasks (no dependencies)
+    for tid in tasks.keys():
+        if tid not in dependent_tasks and not (tasks.get(tid, {}).get("dependsOn") or []):
+            lines.append(f"  plan --> {_task_node_id(tid)}")
+
     return "\n".join(lines)
 
 
