@@ -155,11 +155,13 @@ def cmd_profile_sync(args: argparse.Namespace) -> None:
     store = profiles.setdefault("agents", {})
     for a in agents:
         existing = store.get(a["id"], {})
+        tags = existing.get("tags") or infer_tags(a["id"], a["name"])
         store[a["id"]] = {
             "id": a["id"],
             "name": a["name"],
             "workspace": a["workspace"],
-            "tags": existing.get("tags") or infer_tags(a["id"], a["name"]),
+            "tags": tags,
+            "capabilities": existing.get("capabilities") or tags,
             "extraDescription": existing.get("extraDescription", ""),
             "priorityBias": existing.get("priorityBias", 0),
             "enabled": existing.get("enabled", True),
@@ -241,6 +243,7 @@ def _score_agent(request: str, profile: dict[str, Any]) -> tuple[int, list[str]]
     # 1) Direct lexical overlaps from id/name/description/tags.
     fields = [profile.get("id", ""), profile.get("name", ""), profile.get("extraDescription", "")]
     fields.extend(profile.get("tags", []))
+    fields.extend(profile.get("capabilities", []))
     for f in fields:
         tok = str(f).strip().lower()
         if not tok:
@@ -287,15 +290,34 @@ def cmd_route(args: argparse.Namespace) -> None:
         if not p.get("enabled", True):
             continue
         score, hits = _score_agent(req, p)
-        ranked.append({"agentId": aid, "score": score, "hits": hits, "tags": p.get("tags", [])})
+        ranked.append(
+            {
+                "agentId": aid,
+                "score": score,
+                "hits": hits,
+                "tags": p.get("tags", []),
+                "capabilities": p.get("capabilities", p.get("tags", [])),
+            }
+        )
     ranked.sort(key=lambda x: (-x["score"], x["agentId"]))
 
     selected = ranked[0]["agentId"] if ranked else None
-    reason = "conservative single-owner selection"
+    required_caps = _extract_capabilities(req)
+    role_candidates: dict[str, list[str]] = {}
+    for cap in required_caps:
+        role_candidates[cap] = [
+            c["agentId"]
+            for c in ranked
+            if cap in set(c.get("tags", []) + c.get("capabilities", []))
+        ][:5]
+
+    reason = "capability-aware routing with ranked role candidates"
     proj["routing"] = {
         "request": req,
         "candidates": ranked[:8],
         "selected": selected,
+        "requiredCapabilities": required_caps,
+        "roleCandidates": role_candidates,
         "reason": reason,
         "routedAt": now_iso(),
     }
@@ -312,10 +334,51 @@ def cmd_route(args: argparse.Namespace) -> None:
         print(f"- {c['agentId']}: score={c['score']} hits={','.join(c['hits']) or '-'}")
 
 
+CAPABILITY_CUES: dict[str, list[str]] = {
+    "research": ["research", "analy", "分析", "调研", "资料", "查找"],
+    "coding": ["code", "implement", "refactor", "开发", "实现", "重构", "修复", "脚本"],
+    "testing": ["test", "pytest", "unit test", "coverage", "测试", "用例", "覆盖率", "回归"],
+    "docs": ["doc", "readme", "documentation", "文档", "说明", "总结"],
+    "ops": ["deploy", "ops", "monitor", "上线", "监控", "告警", "运维"],
+    "image": ["image", "poster", "图", "海报", "绘图"],
+}
+
+
+def _agent_capabilities(profile: dict[str, Any]) -> set[str]:
+    caps = set(profile.get("capabilities") or [])
+    caps.update(profile.get("tags") or [])
+    return caps
+
+
+def _extract_capabilities(request: str) -> list[str]:
+    text = request.lower()
+    out: list[str] = []
+    for cap, words in CAPABILITY_CUES.items():
+        if any(w in text for w in words):
+            out.append(cap)
+
+    # conservative default: implementation-oriented requests imply coding.
+    if not out:
+        out = ["coding"]
+
+    # stable stage order for generic orchestration
+    order = ["research", "coding", "testing", "docs", "ops", "image"]
+    return [c for c in order if c in out]
+
+
 def _pick_candidate_by_tag(candidates: list[dict[str, Any]], tag: str) -> str | None:
     for c in candidates:
         if tag in (c.get("tags") or []):
             return c.get("agentId")
+    return None
+
+
+def _pick_best_for_capability(candidates: list[dict[str, Any]], capability: str) -> str | None:
+    for c in candidates:
+        tags = set(c.get("tags") or [])
+        caps = set(c.get("capabilities") or [])
+        if capability in tags or capability in caps:
+            return str(c.get("agentId") or "") or None
     return None
 
 
@@ -349,7 +412,8 @@ def _tasks_mermaid(proj: dict[str, Any]) -> str:
     # Nodes: real tasks
     for tid, t in tasks.items():
         nid = _task_node_id(tid)
-        label = f"{tid}: {t.get('agentId','')}"
+        cap = t.get("capability")
+        label = f"{tid}: {t.get('agentId','')}" if not cap else f"{tid}: {t.get('agentId','')} [{cap}]"
         lines.append(f"  {nid}[\"{label}\"]")
 
     # Edges: dependencies
@@ -380,39 +444,85 @@ def cmd_plan(args: argparse.Namespace) -> None:
     if not selected:
         die("run route first")
 
+    required_caps = proj.get("routing", {}).get("requiredCapabilities") or _extract_capabilities(req)
+
     resolved = "single"
     if args.mode in ("single", "linear", "dag", "debate"):
         resolved = args.mode
-    elif any(k in req for k in ["并行", "dag", "pipeline", "多阶段"]):
+    elif any(k in req for k in ["并行", "dag", "pipeline", "多阶段", "parallel"]):
         resolved = "dag"
-    elif any(k in req for k in ["先", "然后", "再", "步骤"]):
+    elif len(required_caps) > 1 or any(k in req for k in ["先", "然后", "再", "步骤"]):
         resolved = "linear"
 
     tasks: list[dict[str, Any]] = []
     if resolved == "single":
-        tasks.append({"id": "main", "agentId": selected, "type": "execute", "status": "pending", "retry": 0})
+        cap = required_caps[0] if required_caps else "coding"
+        aid = _pick_best_for_capability(candidates, cap) or selected
+        tasks.append({
+            "id": "main",
+            "agentId": aid,
+            "type": "execute",
+            "capability": cap,
+            "status": "pending",
+            "retry": 0,
+            "dependsOn": [],
+        })
     elif resolved == "linear":
-        # Conservative chain: owner first; optional test/docs stages when text indicates.
-        tasks.append({"id": "stage-1", "agentId": selected, "type": "execute", "status": "pending", "retry": 0, "dependsOn": []})
-        stage_n = 2
-        if any(k in req for k in ["测试", "test", "coverage", "pytest"]):
-            aid = _pick_candidate_by_tag(candidates, "testing") or selected
-            tasks.append({"id": f"stage-{stage_n}", "agentId": aid, "type": "execute", "status": "pending", "retry": 0, "dependsOn": ["stage-1"]})
-            stage_n += 1
-        if any(k in req for k in ["文档", "docs", "readme", "说明"]):
-            dep = f"stage-{stage_n-1}" if stage_n > 2 else "stage-1"
-            aid = _pick_candidate_by_tag(candidates, "docs") or selected
-            tasks.append({"id": f"stage-{stage_n}", "agentId": aid, "type": "execute", "status": "pending", "retry": 0, "dependsOn": [dep]})
+        prev: list[str] = []
+        for idx, cap in enumerate(required_caps or ["coding"], start=1):
+            aid = _pick_best_for_capability(candidates, cap)
+            if not aid:
+                die(f"no suitable agent for capability '{cap}'; update profiles/tags first")
+            tid = f"stage-{idx}"
+            tasks.append(
+                {
+                    "id": tid,
+                    "agentId": aid,
+                    "type": "execute",
+                    "capability": cap,
+                    "status": "pending",
+                    "retry": 0,
+                    "dependsOn": prev.copy(),
+                }
+            )
+            prev = [tid]
     elif resolved == "dag":
-        # Minimal DAG: owner + optional complementary branch.
-        tasks.append({"id": "main", "agentId": selected, "type": "execute", "status": "pending", "retry": 0, "dependsOn": []})
-        if any(k in req for k in ["测试", "test", "coverage", "文档", "docs"]):
-            comp = _pick_candidate_by_tag(candidates, "testing") or _pick_candidate_by_tag(candidates, "docs")
-            if comp and comp != selected:
-                tasks.append({"id": "parallel-1", "agentId": comp, "type": "execute", "status": "pending", "retry": 0, "dependsOn": []})
+        # Capability-driven DAG: coding as trunk; compatible capabilities branch after coding when present.
+        if not required_caps:
+            required_caps = ["coding"]
+        trunk = "coding" if "coding" in required_caps else required_caps[0]
+        trunk_agent = _pick_best_for_capability(candidates, trunk) or selected
+        tasks.append({
+            "id": "main",
+            "agentId": trunk_agent,
+            "type": "execute",
+            "capability": trunk,
+            "status": "pending",
+            "retry": 0,
+            "dependsOn": [],
+        })
+        branch_n = 1
+        for cap in required_caps:
+            if cap == trunk:
+                continue
+            aid = _pick_best_for_capability(candidates, cap)
+            if not aid:
+                die(f"no suitable agent for capability '{cap}'; update profiles/tags first")
+            tasks.append(
+                {
+                    "id": f"parallel-{branch_n}",
+                    "agentId": aid,
+                    "type": "execute",
+                    "capability": cap,
+                    "status": "pending",
+                    "retry": 0,
+                    "dependsOn": ["main"],
+                }
+            )
+            branch_n += 1
     else:
         # debate placeholder: keep one task but mark plan mode.
-        tasks.append({"id": "debate-1", "agentId": selected, "type": "debate", "status": "pending", "retry": 0})
+        tasks.append({"id": "debate-1", "agentId": selected, "type": "debate", "status": "pending", "retry": 0, "dependsOn": []})
 
     proj["plan"] = {
         "mode": args.mode,
