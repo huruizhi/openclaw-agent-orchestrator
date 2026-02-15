@@ -1079,6 +1079,244 @@ def _refresh_project_status(proj: dict[str, Any]) -> None:
         proj["status"] = "active"
 
 
+def cmd_execute_task(args: argparse.Namespace) -> None:
+    """Execute a single task using sessions_spawn and collect results automatically."""
+    pf, proj = _load_project_or_die(args.project)
+    task = proj.get("tasks", {}).get(args.task_id)
+    if not task:
+        die(f"task not found: {args.task_id}")
+    
+    if task.get("status") not in ("pending", "dispatched", "retry-pending"):
+        die(f"task {args.task_id} is not ready for execution (status: {task.get('status')})")
+    
+    # Update status to in-progress
+    task["status"] = "in-progress"
+    task["startedAt"] = now_iso()
+    _save_project_with_audit(pf, proj, f"started execution of {args.task_id}")
+    
+    # Get task description
+    task_text = task.get("description") or proj.get("routing", {}).get("request", proj.get("goal", ""))
+    agent_id = task.get("agentId")
+    label = f"ao:{proj.get('project')}:{args.task_id}"
+    
+    print(f"🚀 Executing task {args.task_id}...")
+    print(f"   Agent: {agent_id}")
+    print(f"   Task: {task_text[:100]}{'...' if len(task_text) > 100 else ''}")
+    
+    # Prepare sessions_spawn command
+    spawn_cmd = [
+        "openclaw", "sessions", "spawn",
+        "--agent", agent_id,
+        "--task", task_text,
+        "--label", label,
+        "--run-timeout", str(args.timeout),
+    ]
+    
+    if args.thinking:
+        spawn_cmd.extend(["--thinking", args.thinking])
+    
+    try:
+        # Execute via sessions_spawn
+        result = _run_json_cmd(spawn_cmd, timeout=args.timeout + 30)
+        
+        if "error" in result:
+            # Execution failed
+            task["status"] = "failed"
+            task["error"] = result["error"]
+            task["failedAt"] = now_iso()
+            _save_project_with_audit(pf, proj, f"task {args.task_id} failed: {result['error']}")
+            print(f"❌ Task {args.task_id} failed: {result['error']}")
+            return
+        
+        # Execution succeeded
+        task["status"] = "done"
+        task["completedAt"] = now_iso()
+        task["output"] = json.dumps(result, ensure_ascii=False)
+        
+        _refresh_project_status(proj)
+        _save_project_with_audit(pf, proj, f"task {args.task_id} completed successfully")
+        
+        print(f"✅ Task {args.task_id} completed successfully")
+        
+        # Check if project is complete
+        if proj.get("status") == "completed":
+            _notify_main(
+                proj,
+                _render_template(proj, "main_final", {"project": proj.get("project")}),
+            )
+            print(f"🎉 Project {proj.get('project')} completed!")
+        
+    except Exception as e:
+        task["status"] = "failed"
+        task["error"] = str(e)
+        task["failedAt"] = now_iso()
+        _save_project_with_audit(pf, proj, f"task {args.task_id} failed with exception: {e}")
+        print(f"❌ Task {args.task_id} failed with exception: {e}")
+
+
+def cmd_run(args: argparse.Namespace) -> None:
+    """Execute all tasks in a project automatically with auto-advance."""
+    pf, proj = _load_project_or_die(args.project)
+    
+    # Check approval
+    approval = proj.get("approval")
+    if not isinstance(approval, dict) or approval.get("state") != "approved":
+        if args.auto_approve:
+            # Auto approve
+            approval = proj.setdefault("approval", {"required": True, "state": "pending"})
+            approval["state"] = "approved"
+            approval["approvedAt"] = now_iso()
+            approval["approvedBy"] = "auto-approve"
+            approval["note"] = "Auto-approved via run command"
+            _save_project_with_audit(pf, proj, "auto-approved project")
+            print("✅ Project auto-approved")
+        else:
+            die("project is awaiting audit approval; run: ao approve <project> --by <name> or use --auto-approve")
+    
+    tasks = proj.get("tasks", {})
+    if not tasks:
+        die("no tasks; run plan first")
+    
+    def deps_done(t: dict[str, Any]) -> bool:
+        deps = t.get("dependsOn", []) or []
+        return all(tasks.get(d, {}).get("status") == "done" for d in deps)
+    
+    executed_count = 0
+    max_iterations = len(tasks) * 2  # Prevent infinite loops
+    iteration = 0
+    
+    while iteration < max_iterations:
+        iteration += 1
+        
+        # Find next executable task
+        pending = [
+            (tid, t)
+            for tid, t in tasks.items()
+            if t.get("status") in ("pending", "dispatched", "retry-pending") and deps_done(t)
+        ]
+        
+        if not pending:
+            break
+        
+        # Execute first pending task
+        tid, t = pending[0]
+        
+        # Update to in-progress
+        t["status"] = "in-progress"
+        t["startedAt"] = now_iso()
+        _save_project_with_audit(pf, proj, f"started execution of {tid}")
+        
+        # Get task info
+        task_text = t.get("description") or proj.get("routing", {}).get("request", proj.get("goal", ""))
+        agent_id = t.get("agentId")
+        label = f"ao:{proj.get('project')}:{tid}"
+        
+        print(f"\n{'='*60}")
+        print(f"[{executed_count + 1}/{len(tasks)}] Executing: {tid}")
+        print(f"  Agent: {agent_id}")
+        print(f"  Capability: {t.get('capability', 'unknown')}")
+        print(f"  Task: {task_text[:80]}{'...' if len(task_text) > 80 else ''}")
+        print(f"{'='*60}\n")
+        
+        # Execute via sessions_spawn
+        spawn_cmd = [
+            "openclaw", "sessions", "spawn",
+            "--agent", agent_id,
+            "--task", task_text,
+            "--label", label,
+            "--run-timeout", str(args.timeout),
+        ]
+        
+        if args.thinking:
+            spawn_cmd.extend(["--thinking", args.thinking])
+        
+        try:
+            result = _run_json_cmd(spawn_cmd, timeout=args.timeout + 30)
+            
+            if "error" in result:
+                # Task failed
+                t["status"] = "failed"
+                t["error"] = result["error"]
+                t["failedAt"] = now_iso()
+                
+                # Check retry policy
+                max_retries = int(proj.get("policy", {}).get("maxRetries", 3))
+                retry_count = t.get("retry", 0)
+                
+                if retry_count < max_retries:
+                    t["retry"] = retry_count + 1
+                    t["status"] = "retry-pending"
+                    print(f"⚠️  Task {tid} failed (attempt {retry_count + 1}/{max_retries + 1}): {result['error']}")
+                    print(f"   Will retry...")
+                    _save_project_with_audit(pf, proj, f"task {tid} failed, retry {retry_count + 1}")
+                    continue
+                else:
+                    print(f"❌ Task {tid} failed after {max_retries} retries: {result['error']}")
+                    _save_project_with_audit(pf, proj, f"task {tid} failed after max retries")
+                    
+                    if proj.get("policy", {}).get("humanConfirmAfterMaxRetries", True):
+                        proj["status"] = "needs-human-confirmation"
+                        _save_project_with_audit(pf, proj, "project paused for human confirmation")
+                        print("\n⚠️  Project paused. Human confirmation required.")
+                        print(f"   Run: ao confirm {proj.get('project')} {tid}")
+                        return
+                    else:
+                        # Skip and continue
+                        print("   Skipping failed task and continuing...")
+                        continue
+            else:
+                # Task succeeded
+                t["status"] = "done"
+                t["completedAt"] = now_iso()
+                t["output"] = json.dumps(result, ensure_ascii=False)
+                
+                # Notify
+                _notify_main(
+                    proj,
+                    _render_template(
+                        proj,
+                        "main_task_done",
+                        {
+                            "project": proj.get("project"),
+                            "task_id": tid,
+                            "agent_id": agent_id,
+                        },
+                    ),
+                )
+                
+                print(f"✅ Task {tid} completed successfully")
+                executed_count += 1
+                
+        except Exception as e:
+            t["status"] = "failed"
+            t["error"] = str(e)
+            t["failedAt"] = now_iso()
+            print(f"❌ Task {tid} failed with exception: {e}")
+            _save_project_with_audit(pf, proj, f"task {tid} failed with exception")
+            return
+        
+        # Refresh and save
+        _refresh_project_status(proj)
+        _save_project_with_audit(pf, proj, f"task {tid} execution completed")
+        
+        # Check if project completed
+        if proj.get("status") == "completed":
+            _notify_main(
+                proj,
+                _render_template(proj, "main_final", {"project": proj.get("project")}),
+            )
+            print(f"\n🎉 Project {proj.get('project')} completed! All {executed_count} tasks finished.")
+            return
+    
+    # Check final status
+    if proj.get("status") != "completed":
+        pending_count = sum(1 for t in tasks.values() if t.get("status") in ("pending", "dispatched", "retry-pending"))
+        if pending_count > 0:
+            print(f"\n⚠️  {pending_count} tasks still pending (waiting for dependencies or blocked)")
+        else:
+            print(f"\n⚠️  Execution stopped. Some tasks may have failed.")
+
+
 def cmd_collect(args: argparse.Namespace) -> None:
     pf, proj = _load_project_or_die(args.project)
     task = proj.get("tasks", {}).get(args.task_id)
@@ -1600,6 +1838,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("pipeline", help="print task-only pipeline as Mermaid")
     sp.add_argument("project")
 
+    sp = sub.add_parser("execute-task", help="execute a single task using sessions_spawn")
+    sp.add_argument("project")
+    sp.add_argument("task_id")
+    sp.add_argument("--timeout", type=int, default=600, help="execution timeout in seconds")
+    sp.add_argument("--thinking", choices=["off", "minimal", "low", "medium", "high"], default="")
+
+    sp = sub.add_parser("run", help="execute all tasks automatically with auto-advance")
+    sp.add_argument("project")
+    sp.add_argument("--timeout", type=int, default=600, help="per-task timeout in seconds")
+    sp.add_argument("--thinking", choices=["off", "minimal", "low", "medium", "high"], default="")
+    sp.add_argument("--auto-approve", action="store_true", help="auto-approve project if not approved")
+
     sp = sub.add_parser("approve", help="approve orchestration plan after user audit")
     sp.add_argument("project")
     sp.add_argument("--by", default="")
@@ -1698,6 +1948,10 @@ def main() -> None:
         cmd_next(args)
     elif args.cmd == "pipeline":
         cmd_pipeline(args)
+    elif args.cmd == "execute-task":
+        cmd_execute_task(args)
+    elif args.cmd == "run":
+        cmd_run(args)
     elif args.cmd == "approve":
         cmd_approve(args)
     elif args.cmd == "dispatch":
