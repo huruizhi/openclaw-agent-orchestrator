@@ -187,6 +187,7 @@ def cmd_init(args: argparse.Namespace) -> None:
             "main_plan": "🧭 编排进度 | {project}\nplan ready (mode={mode}, tasks={tasks_count})\n状态: awaiting-approval\n请先审计确认后派发：ao approve <project> --by <name>",
             "main_approval": "🧭 编排进度 | {project}\napproval granted by {approved_by}\n可进入任务派发流程",
             "main_dispatch": "🧭 编排进度 | {project}\ndispatch started: {task_id} -> {agent_id}",
+            "main_task_done": "🧭 编排进度 | {project}\n任务完成: {task_id} <- {agent_id}",
             "main_fail": "🧭 编排进度 | {project}\n{task_id} 达到重试上限，等待人工确认",
             "main_confirm": "🧭 编排进度 | {project}\n人工确认通过：{task_id}，可继续派发",
             "main_final": "🎯 最终结果 | {project}\n- Outcome: 全部任务已完成\n- Raw logs: 已同步至执行频道",
@@ -707,6 +708,18 @@ def cmd_collect(args: argparse.Namespace) -> None:
         )
         notified["done"] = now_iso()
     _refresh_project_status(proj)
+    _notify_main(
+        proj,
+        _render_template(
+            proj,
+            "main_task_done",
+            {
+                "project": proj.get("project"),
+                "task_id": args.task_id,
+                "agent_id": task.get("agentId"),
+            },
+        ),
+    )
     if proj.get("status") == "completed":
         _notify_main(
             proj,
@@ -797,19 +810,29 @@ def cmd_relay(args: argparse.Namespace) -> None:
 
     mode = args.mode
     if mode == "dispatch":
-        msg = (
-            f"📋 **任务派发**\n"
-            f"项目: {proj.get('project')}\n"
-            f"任务: {args.task_id}\n"
-            f"Agent: {task.get('agentId')}\n"
-            f"请求: {proj.get('routing', {}).get('request', proj.get('goal', ''))}"
+        msg = _render_template(
+            proj,
+            "agent_dispatch",
+            {
+                "project": proj.get("project"),
+                "task_id": args.task_id,
+                "agent_id": task.get("agentId"),
+                "mode": proj.get("plan", {}).get("resolvedMode"),
+                "request": task.get("taskRequest") or proj.get("routing", {}).get("request", proj.get("goal", "")),
+                "label": task.get("dispatchLabel", ""),
+                "time": task.get("dispatchedAt", ""),
+            },
         )
     else:
-        msg = (
-            f"✅ **任务完成**\n"
-            f"项目: {proj.get('project')}\n"
-            f"任务: {args.task_id}\n"
-            f"结果(原样输出):\n{task.get('output', '')}"
+        msg = _render_template(
+            proj,
+            "agent_done",
+            {
+                "project": proj.get("project"),
+                "task_id": args.task_id,
+                "agent_id": task.get("agentId"),
+                "raw_output": task.get("output", ""),
+            },
         )
 
     chunks = _chunk_text(msg, args.max_chars)
@@ -836,6 +859,11 @@ def cmd_relay(args: argparse.Namespace) -> None:
                 "--json",
             ]
             _run_json_cmd(cmd)
+
+        if mode == "done":
+            # Ensure completion is also echoed to the task agent bound channel.
+            _notify_agent(proj, str(task.get("agentId") or ""), msg, max_chars=args.max_chars)
+
         print(f"✅ sent {len(payloads)} message part(s)")
         return
 
