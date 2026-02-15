@@ -285,6 +285,8 @@ def cmd_route(args: argparse.Namespace) -> None:
     if not profiles:
         die("no agent profiles; run 'profile sync' first")
     req = args.request.strip()
+    required_caps = _extract_capabilities(req)
+    
     ranked = []
     for aid, p in profiles.items():
         if not p.get("enabled", True):
@@ -301,8 +303,28 @@ def cmd_route(args: argparse.Namespace) -> None:
         )
     ranked.sort(key=lambda x: (-x["score"], x["agentId"]))
 
-    selected = ranked[0]["agentId"] if ranked else None
-    required_caps = _extract_capabilities(req)
+    # Select primary agent: prefer pure coding agent for implementation tasks
+    selected = None
+    if "coding" in required_caps:
+        # Prefer agents with ONLY coding capability (not mixed)
+        pure_coding_agents = [
+            c for c in ranked
+            if "coding" in set(c.get("tags", []) + c.get("capabilities", []))
+            and len(set(c.get("tags", []) + c.get("capabilities", [])) & {"testing", "docs", "research", "ops"}) == 0
+        ]
+        if pure_coding_agents:
+            selected = pure_coding_agents[0]["agentId"]
+        
+        # Fallback to any coding agent
+        if not selected:
+            for c in ranked:
+                if "coding" in set(c.get("tags", []) + c.get("capabilities", [])):
+                    selected = c["agentId"]
+                    break
+    
+    if not selected:
+        selected = ranked[0]["agentId"] if ranked else None
+    
     role_candidates: dict[str, list[str]] = {}
     for cap in required_caps:
         role_candidates[cap] = [
@@ -399,30 +421,39 @@ def _decompose_request(request: str) -> list[dict[str, Any]]:
     if not caps:
         caps = ["coding"]
     
-    # Extract clean topic by removing testing-related phrases
+    # Extract clean topic by removing all capability-related phrases
     clean_topic = topic
-    for phrase in ["并测试", "并且测试", "然后测试", "进行测试", "做测试", "写测试"]:
-        clean_topic = clean_topic.replace(phrase, "")
-    clean_topic = clean_topic.strip()
+    for cap, words in CAPABILITY_CUES.items():
+        for w in words:
+            clean_topic = re.sub(r'\b' + re.escape(w) + r'\b', '', clean_topic, flags=re.IGNORECASE)
+    # Clean up
+    clean_topic = re.sub(r'\s+', ' ', clean_topic).strip()
+    clean_topic = re.sub(r'^[,，、；;和与及\s]+', '', clean_topic)
+    clean_topic = re.sub(r'[,，、；;和与及\s]+$', '', clean_topic)
     
     tasks = []
     for idx, cap in enumerate(caps, start=1):
         template = CAPABILITY_TASK_TEMPLATES.get(cap, "完成任务：{topic}")
         
         if cap == "coding":
-            # For coding: use original request but remove testing parts
+            # For coding: extract only the coding part
             desc = request
-            # Remove testing-related phrases
-            for phrase in ["并测试", "并且测试", "然后测试", "然后进行测试", "；测试", "，测试"]:
-                desc = desc.replace(phrase, "，")
-            # Clean up multiple commas and trailing punctuation
-            desc = re.sub(r'[，；]+', '，', desc)
-            desc = re.sub(r'[，；]$', '', desc)
-            desc = re.sub(r'^[，；]', '', desc)
-            description = desc.strip()
+            # Remove testing and docs phrases
+            for phrase in ["进行测试", "完成测试", "做测试", "写测试", "编写测试", "测试验证"]:
+                desc = desc.replace(phrase, "")
+            for phrase in ["使用文档编写", "编写文档", "写文档", "文档编写", "完成文档"]:
+                desc = desc.replace(phrase, "")
+            # Clean up
+            desc = re.sub(r'\s+', ' ', desc).strip()
+            desc = re.sub(r'^[,，、；;和与及\s]+', '', desc)
+            desc = re.sub(r'[,，、；;和与及\s]+$', '', desc)
+            description = desc
         elif cap == "testing":
             # For testing: reference the clean topic
             description = f"对已完成的功能进行测试验证：{clean_topic}（包括功能测试、边界条件、错误处理）"
+        elif cap == "docs":
+            # For docs: create user guide description
+            description = f"编写使用文档：{clean_topic}（包括安装、配置、使用示例）"
         else:
             description = template.format(topic=clean_topic)
         
@@ -444,11 +475,36 @@ def _pick_candidate_by_tag(candidates: list[dict[str, Any]], tag: str) -> str | 
 
 
 def _pick_best_for_capability(candidates: list[dict[str, Any]], capability: str) -> str | None:
+    """Pick the best agent for a capability, preferring pure-capability agents."""
+    # First, try to find a pure capability agent (only has this capability)
+    pure_agents = []
+    mixed_agents = []
+    
     for c in candidates:
         tags = set(c.get("tags") or [])
         caps = set(c.get("capabilities") or [])
-        if capability in tags or capability in caps:
-            return str(c.get("agentId") or "") or None
+        all_caps = tags | caps
+        
+        if capability not in all_caps:
+            continue
+        
+        # Check if it's a pure agent (only has the target capability)
+        other_caps = all_caps - {capability}
+        other_caps = other_caps & {"coding", "testing", "docs", "research", "ops", "image"}
+        
+        if not other_caps:
+            pure_agents.append(c)
+        else:
+            mixed_agents.append(c)
+    
+    # Prefer pure agents
+    if pure_agents:
+        return str(pure_agents[0].get("agentId") or "") or None
+    
+    # Fallback to mixed agents
+    if mixed_agents:
+        return str(mixed_agents[0].get("agentId") or "") or None
+    
     return None
 
 
