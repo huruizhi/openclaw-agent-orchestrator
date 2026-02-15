@@ -30,12 +30,19 @@ $AO decompose <project>
 # 4. Create plan
 $AO plan <project> --mode auto
 
-# 5. Approve
+# 5. Audit (REQUIRED before approve)
+$AO status <project>      # 查看项目状态
+$AO pipeline <project>    # 查看执行流程图
+$AO audit <project>       # 查看审计日志
+
+# 6. Approve
 $AO approve <project> --by <name>
 
-# 6. Execute (NEW!)
+# 7. Execute (NEW!)
 $AO run <project> [--auto-approve] [--timeout 600]
 ```
+
+⚠️ **重要**: Step 5 (Audit) 是必需步骤。在 approve 之前，必须向用户展示项目状态、执行流程和审计日志，供用户审查确认。
 
 ### New Commands
 
@@ -76,6 +83,22 @@ Splits request into capability-specific tasks:
 $AO pipeline <project>
 
 Outputs Mermaid flowchart showing task dependencies.
+```
+
+### Audit Commands
+
+```bash
+# 查看项目审计日志
+$AO audit <project> [--tail N]
+
+# 查看项目状态
+$AO status <project> [--json]
+
+# 查看执行流程图
+$AO pipeline <project>
+
+# 查看下一个待执行任务
+$AO next <project>
 ```
 
 ### Other Commands
@@ -145,6 +168,68 @@ $AO run hn-top30 --auto-approve
 # ✅ Task stage-3 completed successfully
 # 🎉 Project hn-top30 completed!
 ```
+
+## Audit Checklist
+
+在执行 `approve` 之前，必须进行以下审计检查：
+
+### 必查项目
+
+✅ **路由审查**
+```bash
+$AO status <project>
+```
+- 选中的 agent 是否合适？
+- 路由原因是否合理？
+
+✅ **任务审查**
+```bash
+$AO status <project> --json | jq '.plan.tasks'
+```
+- 任务分解是否完整？
+- 能力分配是否正确？
+- 任务数量是否合理？
+
+✅ **流程审查**
+```bash
+$AO pipeline <project>
+```
+- 执行流程是否符合预期？
+- 任务依赖关系是否正确？
+
+✅ **日志审查**
+```bash
+$AO audit <project>
+```
+- 是否有异常事件？
+- 是否有失败的 notification？
+
+### 审计流程示例
+
+```bash
+# 1. 展示项目状态
+$AO status <project>
+
+# 2. 展示执行流程
+$AO pipeline <project>
+
+# 3. 展示审计日志
+$AO audit <project>
+
+# 4. 确认审批
+read -p "确认执行？(y/n): " confirm
+[ "$confirm" = "y" ] && $AO approve <project> --by <name>
+
+# 5. 执行
+$AO run <project>
+```
+
+### ⚠️ 安全提示
+
+- **不要跳过审计步骤**
+- **确保用户理解将要执行的操作**
+- **对于敏感操作，需要显式确认**
+- **使用 `--auto-approve` 时要特别小心**
 
 ## Policy Defaults
 
