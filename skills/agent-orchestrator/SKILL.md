@@ -13,6 +13,29 @@ $AO route my-project --request "request"
 $AO run my-project --auto-approve
 ```
 
+## 🆕 独立任务拆解工具
+
+**无需创建项目即可快速分解任务！**
+
+```bash
+# 设置别名
+alias decompose="python3 /home/ubuntu/clawd/skills/agent-orchestrator/scripts/task_decomposer.py"
+
+# 快速预览任务分解
+decompose "开发用户认证模块，测试，写文档"
+
+# JSON 输出
+decompose --json "调研市场数据"
+
+# 查看支持的能力
+decompose --capabilities
+
+# 交互模式
+decompose --interactive
+```
+
+📖 **详细文档**: [TASK_DECOMPOSER_GUIDE.md](./TASK_DECOMPOSER_GUIDE.md)
+
 ## Commands
 
 ### Core Workflow
