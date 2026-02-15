@@ -1316,23 +1316,17 @@ def cmd_execute_task(args: argparse.Namespace) -> None:
 
 
 def cmd_run(args: argparse.Namespace) -> None:
-    """Execute all tasks in a project automatically with auto-advance."""
+    """Execute all tasks in a project automatically with auto-advance (requires approval first)."""
     pf, proj = _load_project_or_die(args.project)
     
-    # Check approval
+    # Check approval - must be approved before running
     approval = proj.get("approval")
     if not isinstance(approval, dict) or approval.get("state") != "approved":
-        if args.auto_approve:
-            # Auto approve
-            approval = proj.setdefault("approval", {"required": True, "state": "pending"})
-            approval["state"] = "approved"
-            approval["approvedAt"] = now_iso()
-            approval["approvedBy"] = "auto-approve"
-            approval["note"] = "Auto-approved via run command"
-            _save_project_with_audit(pf, proj, "auto-approved project")
-            print("✅ Project auto-approved")
-        else:
-            die("project is awaiting audit approval; run: ao approve <project> --by <name> or use --auto-approve")
+        die(
+            f"⚠️ Project requires approval before execution.\n"
+            f"👉 Run: ao approve {proj.get('project')} --by <your-name>\n"
+            f"   Then: ao run {proj.get('project')}"
+        )
     
     tasks = proj.get("tasks", {})
     if not tasks:
@@ -2086,11 +2080,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--timeout", type=int, default=600, help="execution timeout in seconds")
     sp.add_argument("--thinking", choices=["off", "minimal", "low", "medium", "high"], default="")
 
-    sp = sub.add_parser("run", help="execute all tasks automatically with auto-advance")
+    sp = sub.add_parser("run", help="execute all tasks automatically with auto-advance (requires approval)")
     sp.add_argument("project")
     sp.add_argument("--timeout", type=int, default=600, help="per-task timeout in seconds")
     sp.add_argument("--thinking", choices=["off", "minimal", "low", "medium", "high"], default="")
-    sp.add_argument("--auto-approve", action="store_true", help="auto-approve project if not approved")
 
     sp = sub.add_parser("approve", help="approve orchestration plan after user audit")
     sp.add_argument("project")
