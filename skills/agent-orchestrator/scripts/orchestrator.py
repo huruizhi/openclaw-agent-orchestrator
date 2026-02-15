@@ -460,9 +460,11 @@ def cmd_status(args: argparse.Namespace) -> None:
     p = proj.get("plan", {})
     if p.get("resolvedMode"):
         print(f"plan: {p['resolvedMode']} tasks={len(p.get('tasks',[]))}")
-    approval = proj.get("approval", {})
-    if approval.get("required"):
+    approval = proj.get("approval")
+    if isinstance(approval, dict):
         print(f"approval: {approval.get('state','pending')}")
+    else:
+        print("approval: pending")
     if proj.get("tasks"):
         print("tasks:")
         for tid, t in proj["tasks"].items():
@@ -513,8 +515,9 @@ def cmd_approve(args: argparse.Namespace) -> None:
 
 def cmd_dispatch(args: argparse.Namespace) -> None:
     pf, proj = _load_project_or_die(args.project)
-    approval = proj.get("approval", {}) or {}
-    if approval.get("required", False) and approval.get("state") != "approved":
+    approval = proj.get("approval")
+    # Strict gate: dispatch is blocked unless explicit approval.state == approved.
+    if not isinstance(approval, dict) or approval.get("state") != "approved":
         die("project is awaiting audit approval; run: ao approve <project> --by <name>")
 
     tasks = proj.get("tasks", {})
