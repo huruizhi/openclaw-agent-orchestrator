@@ -897,22 +897,12 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
                 notified["dispatch"] = now_iso()
 
             if args.execute:
-                cmd = [
-                    "openclaw",
-                    "agent",
-                    "--agent",
-                    str(t.get("agentId")),
-                    "--message",
-                    task_text,
-                    "--json",
-                ]
-                if args.thinking:
-                    cmd.extend(["--thinking", args.thinking])
-                result = _run_json_cmd(cmd)
-                raw = json.dumps(result, ensure_ascii=False)
-                t["status"] = "done"
-                t["completedAt"] = now_iso()
-                t["output"] = raw
+                # WARNING: openclaw agent --json hangs in non-TTY environments
+                # For now, just mark as dispatched and print manual execution instructions
+                print(f"\n⚠️  WARNING: --execute is currently disabled due to TTY issues")
+                print(f"To execute manually, use sessions_spawn with this payload:")
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+                t["status"] = "dispatched"
                 detail_done = _render_template(
                     proj,
                     "agent_done",
@@ -948,16 +938,21 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
     _save_project_with_audit(pf, proj, f"dispatch {dispatched_count} task(s){' (executed)' if args.execute else ''}")
 
 
-def _run_json_cmd(cmd: list[str]) -> dict[str, Any]:
-    p = subprocess.run(cmd, capture_output=True, text=True)
-    if p.returncode != 0:
-        die(f"command failed ({' '.join(cmd)}): {p.stderr.strip() or p.stdout.strip()}")
-    raw = p.stdout.strip()
+def _run_json_cmd(cmd: list[str], timeout: int = 600) -> dict[str, Any]:
     try:
-        return json.loads(raw) if raw else {}
-    except json.JSONDecodeError:
-        # tolerate non-json wrappers, keep raw text
-        return {"raw": raw}
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if p.returncode != 0:
+            return {"error": f"command failed: {p.stderr.strip() or p.stdout.strip()}", "returncode": p.returncode}
+        raw = p.stdout.strip()
+        try:
+            return json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            # tolerate non-json wrappers, keep raw text
+            return {"raw": raw}
+    except subprocess.TimeoutExpired:
+        return {"error": f"command timed out after {timeout}s"}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def _chunk_text(s: str, n: int) -> list[str]:
