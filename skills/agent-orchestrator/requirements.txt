@@ -1,0 +1,7 @@
+# OpenClaw Task Decomposer (M2) Dependencies
+
+# JSON Schema validation
+jsonschema>=4.26.0
+
+# Environment variable management
+python-dotenv>=1.0.0

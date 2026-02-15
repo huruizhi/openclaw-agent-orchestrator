@@ -1,0 +1,24 @@
+{
+  "id": "tsk_01H8VK0J4R2Q3YN9XMWDPESZAT",
+  "title": "Create user authentication system",
+  "description": "Implement login and registration with JWT tokens",
+  "status": "pending",
+  "deps": [
+    "tsk_01H8VK0J4R2Q3YN9XMWDPESZBT"
+  ],
+  "inputs": [
+    "user_requirements",
+    "security_specs"
+  ],
+  "outputs": [
+    "auth_service.py",
+    "user_model.py",
+    "jwt_utils.py"
+  ],
+  "done_when": [
+    "User can register with email and password",
+    "User can login and receive JWT token",
+    "Token validation middleware is implemented"
+  ],
+  "assigned_to": null
+}

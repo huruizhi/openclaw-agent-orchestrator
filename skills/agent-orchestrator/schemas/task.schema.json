@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OpenClaw Task (MVP)",
+  "type": "object",
+  "required": [
+    "id",
+    "title",
+    "status",
+    "deps",
+    "inputs",
+    "outputs",
+    "done_when"
+  ],
+  "additionalProperties": false,
+
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^tsk_[0-9A-HJKMNP-TV-Z]{26}$",
+      "description": "ULID based task id"
+    },
+
+    "title": {
+      "type": "string",
+      "minLength": 3,
+      "description": "Short human readable task name"
+    },
+
+    "description": {
+      "type": "string",
+      "description": "Optional extra details for agent"
+    },
+
+    "status": {
+      "type": "string",
+      "enum": ["pending", "ready", "running", "waiting", "done", "failed"],
+      "description": "Runtime state managed by scheduler"
+    },
+
+    "deps": {
+      "type": "array",
+      "description": "Tasks that must finish before this starts",
+      "items": {
+        "type": "string",
+        "pattern": "^tsk_[0-9A-HJKMNP-TV-Z]{26}$"
+      }
+    },
+
+    "inputs": {
+      "type": "array",
+      "description": "Information required before execution",
+      "items": {
+        "type": "string"
+      }
+    },
+
+    "outputs": {
+      "type": "array",
+      "description": "Expected artifacts produced",
+      "items": {
+        "type": "string"
+      }
+    },
+
+    "done_when": {
+      "type": "array",
+      "description": "Definition of done — acceptance criteria",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+
+    "assigned_to": {
+      "type": ["string", "null"],
+      "description": "Agent name (filled by scheduler)"
+    }
+  }
+}
+
