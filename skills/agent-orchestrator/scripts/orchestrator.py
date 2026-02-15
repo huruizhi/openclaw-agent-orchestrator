@@ -335,12 +335,21 @@ def cmd_route(args: argparse.Namespace) -> None:
 
 
 CAPABILITY_CUES: dict[str, list[str]] = {
-    "research": ["research", "analy", "分析", "调研", "资料", "查找"],
-    "coding": ["code", "implement", "refactor", "开发", "实现", "重构", "修复", "脚本"],
-    "testing": ["test", "pytest", "unit test", "coverage", "测试", "用例", "覆盖率", "回归"],
-    "docs": ["doc", "readme", "documentation", "文档", "说明", "总结"],
-    "ops": ["deploy", "ops", "monitor", "上线", "监控", "告警", "运维"],
-    "image": ["image", "poster", "图", "海报", "绘图"],
+    "research": ["research", "analy", "分析", "调研", "资料", "查找", "收集", "整理"],
+    "coding": ["code", "implement", "refactor", "开发", "实现", "重构", "修复", "脚本", "编写", "编写程序", "编程"],
+    "testing": ["test", "pytest", "unit test", "coverage", "测试", "用例", "覆盖率", "回归", "验证"],
+    "docs": ["doc", "readme", "documentation", "文档", "说明", "总结", "写文档"],
+    "ops": ["deploy", "ops", "monitor", "上线", "监控", "告警", "运维", "部署"],
+    "image": ["image", "poster", "图", "海报", "绘图", "设计"],
+}
+
+CAPABILITY_TASK_TEMPLATES: dict[str, str] = {
+    "research": "进行资料调研与分析：{topic}",
+    "coding": "实现/开发：{topic}",
+    "testing": "测试验证：{topic}（包括功能验证、边界测试、错误处理）",
+    "docs": "编写文档：{topic}",
+    "ops": "运维部署：{topic}",
+    "image": "设计/绘图：{topic}",
 }
 
 
@@ -364,6 +373,67 @@ def _extract_capabilities(request: str) -> list[str]:
     # stable stage order for generic orchestration
     order = ["research", "coding", "testing", "docs", "ops", "image"]
     return [c for c in order if c in out]
+
+
+def _extract_topic(request: str) -> str:
+    """Extract main topic/subject from request for task template."""
+    # Remove common action words to get the core topic
+    text = request
+    for cap, words in CAPABILITY_CUES.items():
+        for w in words:
+            # Only remove if it's a standalone word
+            text = re.sub(r'\b' + re.escape(w) + r'\b', '', text, flags=re.IGNORECASE)
+    # Clean up
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"^[,，、；;和与及\s]+", "", text)
+    text = re.sub(r"[,，、；;和与及\s]+$", "", text)
+    text = re.sub(r"^\s*(然后|再|接着|之后)\s*", "", text)
+    return text.strip() or request
+
+
+def _decompose_request(request: str) -> list[dict[str, Any]]:
+    """Decompose a request into capability-specific tasks with individual descriptions."""
+    caps = _extract_capabilities(request)
+    topic = _extract_topic(request)
+    
+    if not caps:
+        caps = ["coding"]
+    
+    # Extract clean topic by removing testing-related phrases
+    clean_topic = topic
+    for phrase in ["并测试", "并且测试", "然后测试", "进行测试", "做测试", "写测试"]:
+        clean_topic = clean_topic.replace(phrase, "")
+    clean_topic = clean_topic.strip()
+    
+    tasks = []
+    for idx, cap in enumerate(caps, start=1):
+        template = CAPABILITY_TASK_TEMPLATES.get(cap, "完成任务：{topic}")
+        
+        if cap == "coding":
+            # For coding: use original request but remove testing parts
+            desc = request
+            # Remove testing-related phrases
+            for phrase in ["并测试", "并且测试", "然后测试", "然后进行测试", "；测试", "，测试"]:
+                desc = desc.replace(phrase, "，")
+            # Clean up multiple commas and trailing punctuation
+            desc = re.sub(r'[，；]+', '，', desc)
+            desc = re.sub(r'[，；]$', '', desc)
+            desc = re.sub(r'^[，；]', '', desc)
+            description = desc.strip()
+        elif cap == "testing":
+            # For testing: reference the clean topic
+            description = f"对已完成的功能进行测试验证：{clean_topic}（包括功能测试、边界条件、错误处理）"
+        else:
+            description = template.format(topic=clean_topic)
+        
+        tasks.append({
+            "id": f"task-{idx}",
+            "capability": cap,
+            "description": description,
+            "dependsOn": [f"task-{idx-1}"] if idx > 1 else [],
+        })
+    
+    return tasks
 
 
 def _pick_candidate_by_tag(candidates: list[dict[str, Any]], tag: str) -> str | None:
@@ -434,6 +504,36 @@ def _tasks_mermaid(proj: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def cmd_decompose(args: argparse.Namespace) -> None:
+    ensure_dirs()
+    pf = project_file(args.project)
+    proj = load_json(pf)
+    
+    req = proj.get("routing", {}).get("request") or proj.get("goal", "")
+    if not req:
+        die("no request/goal found; run route first or provide goal")
+    
+    decomposed = _decompose_request(req)
+    
+    proj["decomposed"] = {
+        "request": req,
+        "tasks": decomposed,
+        "decomposedAt": now_iso(),
+    }
+    
+    proj["updatedAt"] = now_iso()
+    proj.setdefault("audit", []).append({"time": now_iso(), "event": f"decomposed into {len(decomposed)} tasks"})
+    save_json(pf, proj)
+    
+    if args.json:
+        print(json.dumps(decomposed, indent=2, ensure_ascii=False))
+    else:
+        print(f"✅ decomposed into {len(decomposed)} tasks:\n")
+        for t in decomposed:
+            deps = f" (depends: {', '.join(t['dependsOn'])})" if t.get("dependsOn") else ""
+            print(f"[{t['capability']}] {t['description']}{deps}")
+
+
 def cmd_plan(args: argparse.Namespace) -> None:
     ensure_dirs()
     pf = project_file(args.project)
@@ -444,81 +544,107 @@ def cmd_plan(args: argparse.Namespace) -> None:
     if not selected:
         die("run route first")
 
-    required_caps = proj.get("routing", {}).get("requiredCapabilities") or _extract_capabilities(req)
+    # Use decomposed tasks if available, otherwise decompose now
+    decomposed = (proj.get("decomposed") or {}).get("tasks")
+    if not decomposed:
+        decomposed = _decompose_request(req)
+    
+    required_caps = [t["capability"] for t in decomposed]
 
     resolved = "single"
     if args.mode in ("single", "linear", "dag", "debate"):
         resolved = args.mode
     elif any(k in req for k in ["并行", "dag", "pipeline", "多阶段", "parallel"]):
         resolved = "dag"
-    elif len(required_caps) > 1 or any(k in req for k in ["先", "然后", "再", "步骤"]):
+    elif len(decomposed) > 1:
         resolved = "linear"
 
     tasks: list[dict[str, Any]] = []
+    
     if resolved == "single":
-        cap = required_caps[0] if required_caps else "coding"
+        t = decomposed[0]
+        cap = t["capability"]
         aid = _pick_best_for_capability(candidates, cap) or selected
         tasks.append({
             "id": "main",
             "agentId": aid,
             "type": "execute",
             "capability": cap,
+            "description": t["description"],
             "status": "pending",
             "retry": 0,
             "dependsOn": [],
         })
     elif resolved == "linear":
-        prev: list[str] = []
-        for idx, cap in enumerate(required_caps or ["coding"], start=1):
+        for idx, t in enumerate(decomposed, start=1):
+            cap = t["capability"]
             aid = _pick_best_for_capability(candidates, cap)
             if not aid:
                 die(f"no suitable agent for capability '{cap}'; update profiles/tags first")
             tid = f"stage-{idx}"
-            tasks.append(
-                {
-                    "id": tid,
-                    "agentId": aid,
-                    "type": "execute",
-                    "capability": cap,
-                    "status": "pending",
-                    "retry": 0,
-                    "dependsOn": prev.copy(),
-                }
-            )
-            prev = [tid]
+            deps = []
+            if idx > 1:
+                deps = [f"stage-{idx-1}"]
+            elif t.get("dependsOn"):
+                # Map task-N to stage-N
+                for dep in t.get("dependsOn", []):
+                    if dep.startswith("task-"):
+                        dep_num = int(dep.split("-")[1])
+                        deps.append(f"stage-{dep_num}")
+            
+            tasks.append({
+                "id": tid,
+                "agentId": aid,
+                "type": "execute",
+                "capability": cap,
+                "description": t["description"],
+                "status": "pending",
+                "retry": 0,
+                "dependsOn": deps,
+            })
     elif resolved == "dag":
-        # Capability-driven DAG: coding as trunk; compatible capabilities branch after coding when present.
-        if not required_caps:
-            required_caps = ["coding"]
-        trunk = "coding" if "coding" in required_caps else required_caps[0]
-        trunk_agent = _pick_best_for_capability(candidates, trunk) or selected
+        # Use decomposed tasks to build DAG
+        if not decomposed:
+            decomposed = [{"id": "task-1", "capability": "coding", "description": req, "dependsOn": []}]
+        
+        trunk = None
+        for t in decomposed:
+            if t["capability"] == "coding":
+                trunk = t
+                break
+        if not trunk:
+            trunk = decomposed[0]
+        
+        trunk_agent = _pick_best_for_capability(candidates, trunk["capability"]) or selected
         tasks.append({
             "id": "main",
             "agentId": trunk_agent,
             "type": "execute",
-            "capability": trunk,
+            "capability": trunk["capability"],
+            "description": trunk["description"],
             "status": "pending",
             "retry": 0,
             "dependsOn": [],
         })
+        
         branch_n = 1
-        for cap in required_caps:
-            if cap == trunk:
+        for t in decomposed:
+            if t == trunk:
                 continue
+            cap = t["capability"]
             aid = _pick_best_for_capability(candidates, cap)
             if not aid:
                 die(f"no suitable agent for capability '{cap}'; update profiles/tags first")
-            tasks.append(
-                {
-                    "id": f"parallel-{branch_n}",
-                    "agentId": aid,
-                    "type": "execute",
-                    "capability": cap,
-                    "status": "pending",
-                    "retry": 0,
-                    "dependsOn": ["main"],
-                }
-            )
+            tasks.append({
+                "id": f"parallel-{branch_n}",
+                "agentId": aid,
+                "type": "execute",
+                "capability": cap,
+                "description": t["description"],
+                "status": "pending",
+                "retry": 0,
+                "dependsOn": ["main"],
+            })
             branch_n += 1
     else:
         # debate placeholder: keep one task but mark plan mode.
@@ -669,7 +795,10 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
             else:
                 t["status"] = "dispatched"
             notified = t.setdefault("notified", {})
-            task_text = args.task or proj.get("routing", {}).get("request", proj.get("goal", ""))
+            
+            # Use task-specific description if available, otherwise fall back to request
+            task_text = t.get("description") or args.task or proj.get("routing", {}).get("request", proj.get("goal", ""))
+            
             payload = {
                 "agentId": t.get("agentId"),
                 "label": f"ao:{proj.get('project')}:{tid}",
@@ -1401,6 +1530,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--request", "-r", required=True)
     sp.add_argument("--json", "-j", action="store_true")
 
+    sp = sub.add_parser("decompose", help="decompose request into capability-specific tasks")
+    sp.add_argument("project")
+    sp.add_argument("--json", "-j", action="store_true")
+
     sp = sub.add_parser("plan", help="create conservative execution plan")
     sp.add_argument("project")
     sp.add_argument("--mode", choices=["auto", "single", "linear", "dag", "debate"], default="auto")
@@ -1504,6 +1637,8 @@ def main() -> None:
             die("usage: profile sync|set")
     elif args.cmd == "route":
         cmd_route(args)
+    elif args.cmd == "decompose":
+        cmd_decompose(args)
     elif args.cmd == "plan":
         cmd_plan(args)
     elif args.cmd == "status":
