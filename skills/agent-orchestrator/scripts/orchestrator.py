@@ -531,7 +531,7 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
     pending = [
         (tid, t)
         for tid, t in tasks.items()
-        if t.get("status") in ("pending", "retry-pending") and deps_done(t)
+        if t.get("status") in ("pending", "retry-pending", "dispatched") and deps_done(t)
     ]
     if args.only_task:
         pending = [(tid, t) for tid, t in pending if tid == args.only_task]
@@ -542,8 +542,13 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
     payloads: list[dict[str, Any]] = []
     for tid, t in pending:
         prev_status = t.get("status")
-        t["status"] = "in-progress"
         t["dispatchedAt"] = now_iso()
+        # Important: dispatch without --execute only prepares/relays payload,
+        # it must NOT pretend task is running.
+        if args.execute:
+            t["status"] = "in-progress"
+        else:
+            t["status"] = "dispatched"
         notified = t.setdefault("notified", {})
         task_text = args.task or proj.get("routing", {}).get("request", proj.get("goal", ""))
         payload = {
@@ -765,7 +770,7 @@ def _refresh_project_status(proj: dict[str, Any]) -> None:
         proj["status"] = "needs-human-confirmation"
     elif any(s == "in-progress" for s in statuses):
         proj["status"] = "active"
-    elif any(s in ("pending", "retry-pending") for s in statuses):
+    elif any(s in ("pending", "retry-pending", "dispatched") for s in statuses):
         proj["status"] = "active"
 
 
@@ -985,7 +990,7 @@ def cmd_next(args: argparse.Namespace) -> None:
     ready = [
         {"taskId": tid, "agentId": t.get("agentId"), "status": t.get("status"), "dependsOn": t.get("dependsOn", [])}
         for tid, t in tasks.items()
-        if t.get("status") in ("pending", "retry-pending") and deps_done(t)
+        if t.get("status") in ("pending", "retry-pending", "dispatched") and deps_done(t)
     ]
     if args.json:
         print(json.dumps(ready, ensure_ascii=False, indent=2))
