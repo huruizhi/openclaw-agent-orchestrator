@@ -218,17 +218,17 @@ def cmd_init(args: argparse.Namespace) -> None:
             "target": args.notify_target or os.environ.get("AO_NOTIFY_TARGET", ""),
         },
         "templates": {
-            "main_plan": "🧭 编排进度 | {project}\nplan ready (mode={mode}, tasks={tasks_count})\n状态: awaiting-approval\n请先审计确认后派发：ao approve <project> --by <name>",
-            "main_approval": "🧭 编排进度 | {project}\napproval granted by {approved_by}\n可进入任务派发流程",
-            "main_dispatch": "🧭 编排进度 | {project}\ndispatch started: {task_id} -> {agent_id}",
-            "main_task_done": "🧭 编排进度 | {project}\n任务完成: {task_id} <- {agent_id}",
-            "main_fail": "🧭 编排进度 | {project}\n{task_id} 达到重试上限，等待人工确认",
-            "main_confirm": "🧭 编排进度 | {project}\n人工确认通过：{task_id}，可继续派发",
-            "main_final": "🎯 最终结果 | {project}\n- Outcome: 全部任务已完成\n- Raw logs: 已同步至执行频道",
-            "agent_dispatch": "📋 **任务派发 | {project}**\n- Task: {task_id}\n- Agent: {agent_id}\n- Mode: {mode}\n- Priority: 质量 > 成本 > 速度\n- Request:\n{request}\n\n- Execution: {label} | {time}",
-            "agent_done": "✅ **任务完成 | {project}**\n- Task: {task_id}\n- Agent: {agent_id}\n- Status: done\n- Raw Output:\n{raw_output}",
-            "agent_fail": "⚠️ **任务异常 | {project}**\n- Task: {task_id}\n- Agent: {agent_id}\n- Retry: {retry}/{max_retries}\n- Error:\n{error}\n- Next Action: needs-human-confirmation",
-            "agent_confirm": "✅ **人工确认通过 | {project}**\n- Task: {task_id}\n- Agent: {agent_id}\n- Status: retry-pending"
+            "main_plan": "<@1082671722005807114> 🧭 **{project}**\n📋 Plan: `{mode}` | {tasks_count} tasks\n⏳ Status: **Awaiting Approval**\n👉 `ao approve {project} --by <name>`",
+            "main_approval": "<@1082671722005807114> ✅ **{project}**\n👤 Approved by **{approved_by}**\n▶️ Ready to dispatch",
+            "main_dispatch": "<@1082671722005807114> ▶️ **{project}**\n📤 `{task_id}` → `{agent_id}`",
+            "main_task_done": "<@1082671722005807114> ✅ **{project}**\n📥 `{task_id}` ← `{agent_id}`",
+            "main_fail": "<@1082671722005807114> ❌ **{project}**\n⚠️ `{task_id}` - Max retries reached\n👉 `ao confirm {project} {task_id}`",
+            "main_confirm": "<@1082671722005807114> ✅ **{project}**\n🔓 `{task_id}` - Confirmed\n▶️ Ready to retry",
+            "main_final": "<@1082671722005807114> 🎉 **{project}**\n✅ All tasks completed\n📊 Total: {tasks_count} tasks",
+            "agent_dispatch": "📋 **Task Dispatch | {project}**\n🔖 Task: `{task_id}`\n🤖 Agent: `{agent_id}`\n🎯 Mode: `{mode}`\n\n**Request:**\n{request}\n\n⏰ {time}",
+            "agent_done": "✅ **Task Completed | {project}**\n🔖 Task: `{task_id}`\n🤖 Agent: `{agent_id}`\n\n**Output:**\n```\n{raw_output}\n```",
+            "agent_fail": "⚠️ **Task Failed | {project}**\n🔖 Task: `{task_id}`\n🤖 Agent: `{agent_id}`\n🔄 Retry: {retry}/{max_retries}\n\n**Error:**\n```\n{error}\n```",
+            "agent_confirm": "🔓 **Task Confirmed | {project}**\n🔖 Task: `{task_id}`\n🤖 Agent: `{agent_id}`\n▶️ Ready to retry"
         },
         "audit": [{"time": now_iso(), "event": "project initialized"}],
     }
@@ -934,7 +934,7 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
     if proj.get("status") == "completed":
         _notify_main(
             proj,
-            _render_template(proj, "main_final", {"project": proj.get("project")}),
+            _render_template(proj, "main_final", {"project": proj.get("project"), "tasks_count": len(proj.get("tasks", {}))}),
         )
     _save_project_with_audit(pf, proj, f"dispatch {dispatched_count} task(s){' (executed)' if args.execute else ''}")
 
@@ -1287,7 +1287,7 @@ def cmd_execute_task(args: argparse.Namespace) -> None:
         if proj.get("status") == "completed":
             _notify_main(
                 proj,
-                _render_template(proj, "main_final", {"project": proj.get("project")}),
+                _render_template(proj, "main_final", {"project": proj.get("project"), "tasks_count": len(proj.get("tasks", {}))}),
             )
             print(f"🎉 Project {proj.get('project')} completed!")
         
@@ -1545,7 +1545,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         if proj.get("status") == "completed":
             _notify_main(
                 proj,
-                _render_template(proj, "main_final", {"project": proj.get("project")}),
+                _render_template(proj, "main_final", {"project": proj.get("project"), "tasks_count": len(tasks)}),
             )
             print(f"\n🎉 Project {proj.get('project')} completed! All {executed_count} tasks finished.")
             return
@@ -1601,7 +1601,7 @@ def cmd_collect(args: argparse.Namespace) -> None:
     if proj.get("status") == "completed":
         _notify_main(
             proj,
-            _render_template(proj, "main_final", {"project": proj.get("project")}),
+            _render_template(proj, "main_final", {"project": proj.get("project"), "tasks_count": len(proj.get("tasks", {}))}),
         )
     _save_project_with_audit(pf, proj, f"collect {args.task_id} done")
     print(f"✅ collected raw output for {args.task_id}")
