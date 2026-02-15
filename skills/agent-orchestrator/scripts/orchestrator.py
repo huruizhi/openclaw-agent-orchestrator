@@ -528,102 +528,117 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
         deps = t.get("dependsOn", []) or []
         return all(tasks.get(d, {}).get("status") == "done" for d in deps)
 
-    pending = [
-        (tid, t)
-        for tid, t in tasks.items()
-        if t.get("status") in ("pending", "retry-pending", "dispatched") and deps_done(t)
-    ]
-    if args.only_task:
-        pending = [(tid, t) for tid, t in pending if tid == args.only_task]
-    if not pending:
-        print("No dispatchable tasks (waiting dependencies or all completed).")
-        return
-
     payloads: list[dict[str, Any]] = []
-    for tid, t in pending:
-        prev_status = t.get("status")
-        t["dispatchedAt"] = now_iso()
-        # Important: dispatch without --execute only prepares/relays payload,
-        # it must NOT pretend task is running.
-        if args.execute:
-            t["status"] = "in-progress"
-        else:
-            t["status"] = "dispatched"
-        notified = t.setdefault("notified", {})
-        task_text = args.task or proj.get("routing", {}).get("request", proj.get("goal", ""))
-        payload = {
-            "agentId": t.get("agentId"),
-            "label": f"ao:{proj.get('project')}:{tid}",
-            "task": task_text,
-        }
-        payloads.append({"taskId": tid, "payload": payload})
+    dispatched_count = 0
+    first_round = True
 
-        print(f"\n[dispatch {tid}]")
-        print(f"agent: {t.get('agentId')}")
-        print("sessions_spawn payload (copy):")
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    while True:
+        pending = [
+            (tid, t)
+            for tid, t in tasks.items()
+            if t.get("status") in ("pending", "retry-pending", "dispatched") and deps_done(t)
+        ]
+        if args.only_task:
+            pending = [(tid, t) for tid, t in pending if tid == args.only_task]
 
-        t["taskRequest"] = task_text
-        t["dispatchLabel"] = payload["label"]
+        if not pending:
+            if first_round:
+                print("No dispatchable tasks (waiting dependencies or all completed).")
+                return
+            break
 
-        detail_msg = _render_template(
-            proj,
-            "agent_dispatch",
-            {
-                "project": proj.get("project"),
-                "task_id": tid,
-                "agent_id": t.get("agentId"),
-                "mode": proj.get("plan", {}).get("resolvedMode"),
-                "request": task_text,
-                "label": payload["label"],
-                "time": t["dispatchedAt"],
-            },
-        )
-        should_notify_dispatch = (prev_status in ("pending", "retry-pending")) and (not notified.get("dispatch"))
-        if should_notify_dispatch:
-            _notify_agent(proj, str(t.get("agentId") or ""), detail_msg)
-            _notify_main(
+        first_round = False
+
+        for tid, t in pending:
+            prev_status = t.get("status")
+            t["dispatchedAt"] = now_iso()
+            # Important: dispatch without --execute only prepares/relays payload,
+            # it must NOT pretend task is running.
+            if args.execute:
+                t["status"] = "in-progress"
+            else:
+                t["status"] = "dispatched"
+            notified = t.setdefault("notified", {})
+            task_text = args.task or proj.get("routing", {}).get("request", proj.get("goal", ""))
+            payload = {
+                "agentId": t.get("agentId"),
+                "label": f"ao:{proj.get('project')}:{tid}",
+                "task": task_text,
+            }
+            payloads.append({"taskId": tid, "payload": payload})
+
+            print(f"\n[dispatch {tid}]")
+            print(f"agent: {t.get('agentId')}")
+            print("sessions_spawn payload (copy):")
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+            t["taskRequest"] = task_text
+            t["dispatchLabel"] = payload["label"]
+
+            detail_msg = _render_template(
                 proj,
-                _render_template(
-                    proj,
-                    "main_dispatch",
-                    {"project": proj.get("project"), "task_id": tid, "agent_id": t.get("agentId")},
-                ),
-            )
-            notified["dispatch"] = now_iso()
-
-        if args.execute:
-            cmd = [
-                "openclaw",
-                "agent",
-                "--agent",
-                str(t.get("agentId")),
-                "--message",
-                task_text,
-                "--json",
-            ]
-            if args.thinking:
-                cmd.extend(["--thinking", args.thinking])
-            result = _run_json_cmd(cmd)
-            raw = json.dumps(result, ensure_ascii=False)
-            t["status"] = "done"
-            t["completedAt"] = now_iso()
-            t["output"] = raw
-            detail_done = _render_template(
-                proj,
-                "agent_done",
+                "agent_dispatch",
                 {
                     "project": proj.get("project"),
                     "task_id": tid,
                     "agent_id": t.get("agentId"),
-                    "raw_output": raw,
+                    "mode": proj.get("plan", {}).get("resolvedMode"),
+                    "request": task_text,
+                    "label": payload["label"],
+                    "time": t["dispatchedAt"],
                 },
             )
-            notified = t.setdefault("notified", {})
-            if not notified.get("done"):
-                _notify_agent(proj, str(t.get("agentId") or ""), detail_done)
-                notified["done"] = now_iso()
-            print(f"auto-executed via openclaw agent: {tid} -> done")
+            should_notify_dispatch = (prev_status in ("pending", "retry-pending")) and (not notified.get("dispatch"))
+            if should_notify_dispatch:
+                _notify_agent(proj, str(t.get("agentId") or ""), detail_msg)
+                _notify_main(
+                    proj,
+                    _render_template(
+                        proj,
+                        "main_dispatch",
+                        {"project": proj.get("project"), "task_id": tid, "agent_id": t.get("agentId")},
+                    ),
+                )
+                notified["dispatch"] = now_iso()
+
+            if args.execute:
+                cmd = [
+                    "openclaw",
+                    "agent",
+                    "--agent",
+                    str(t.get("agentId")),
+                    "--message",
+                    task_text,
+                    "--json",
+                ]
+                if args.thinking:
+                    cmd.extend(["--thinking", args.thinking])
+                result = _run_json_cmd(cmd)
+                raw = json.dumps(result, ensure_ascii=False)
+                t["status"] = "done"
+                t["completedAt"] = now_iso()
+                t["output"] = raw
+                detail_done = _render_template(
+                    proj,
+                    "agent_done",
+                    {
+                        "project": proj.get("project"),
+                        "task_id": tid,
+                        "agent_id": t.get("agentId"),
+                        "raw_output": raw,
+                    },
+                )
+                notified = t.setdefault("notified", {})
+                if not notified.get("done"):
+                    _notify_agent(proj, str(t.get("agentId") or ""), detail_done)
+                    notified["done"] = now_iso()
+                print(f"auto-executed via openclaw agent: {tid} -> done")
+
+            dispatched_count += 1
+
+        # Lightweight auto-advance: when executing, immediately pick up newly unblocked tasks.
+        if (not args.execute) or args.only_task:
+            break
 
     if args.out_json:
         Path(args.out_json).write_text(json.dumps(payloads, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -635,7 +650,7 @@ def cmd_dispatch(args: argparse.Namespace) -> None:
             proj,
             _render_template(proj, "main_final", {"project": proj.get("project")}),
         )
-    _save_project_with_audit(pf, proj, f"dispatch {len(pending)} task(s){' (executed)' if args.execute else ''}")
+    _save_project_with_audit(pf, proj, f"dispatch {dispatched_count} task(s){' (executed)' if args.execute else ''}")
 
 
 def _run_json_cmd(cmd: list[str]) -> dict[str, Any]:
