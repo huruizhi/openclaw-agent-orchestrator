@@ -1103,6 +1103,25 @@ def cmd_execute_task(args: argparse.Namespace) -> None:
     print(f"   Agent: {agent_id}")
     print(f"   Task: {task_text[:100]}{'...' if len(task_text) > 100 else ''}")
     
+    # Notify agent channel - task dispatch
+    notified = task.setdefault("notified", {})
+    if not notified.get("dispatch"):
+        dispatch_msg = _render_template(
+            proj,
+            "agent_dispatch",
+            {
+                "project": proj.get("project"),
+                "task_id": args.task_id,
+                "agent_id": agent_id,
+                "mode": proj.get("plan", {}).get("resolvedMode", "single"),
+                "request": task_text,
+                "label": label,
+                "time": task["startedAt"],
+            },
+        )
+        _notify_agent(proj, str(agent_id or ""), dispatch_msg)
+        notified["dispatch"] = now_iso()
+    
     # Prepare sessions_spawn command
     spawn_cmd = [
         "openclaw", "sessions", "spawn",
@@ -1132,6 +1151,35 @@ def cmd_execute_task(args: argparse.Namespace) -> None:
         task["status"] = "done"
         task["completedAt"] = now_iso()
         task["output"] = json.dumps(result, ensure_ascii=False)
+        
+        # Notify agent channel - task done
+        if not notified.get("done"):
+            done_msg = _render_template(
+                proj,
+                "agent_done",
+                {
+                    "project": proj.get("project"),
+                    "task_id": args.task_id,
+                    "agent_id": agent_id,
+                    "raw_output": task["output"][:500],
+                },
+            )
+            _notify_agent(proj, str(agent_id or ""), done_msg)
+            notified["done"] = now_iso()
+        
+        # Notify main channel
+        _notify_main(
+            proj,
+            _render_template(
+                proj,
+                "main_task_done",
+                {
+                    "project": proj.get("project"),
+                    "task_id": args.task_id,
+                    "agent_id": agent_id,
+                },
+            ),
+        )
         
         _refresh_project_status(proj)
         _save_project_with_audit(pf, proj, f"task {args.task_id} completed successfully")
@@ -1218,6 +1266,25 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(f"  Task: {task_text[:80]}{'...' if len(task_text) > 80 else ''}")
         print(f"{'='*60}\n")
         
+        # Notify agent channel - task dispatch
+        notified = t.setdefault("notified", {})
+        if not notified.get("dispatch"):
+            dispatch_msg = _render_template(
+                proj,
+                "agent_dispatch",
+                {
+                    "project": proj.get("project"),
+                    "task_id": tid,
+                    "agent_id": agent_id,
+                    "mode": proj.get("plan", {}).get("resolvedMode", "auto"),
+                    "request": task_text,
+                    "label": label,
+                    "time": t["startedAt"],
+                },
+            )
+            _notify_agent(proj, str(agent_id or ""), dispatch_msg)
+            notified["dispatch"] = now_iso()
+        
         # Execute via sessions_spawn
         spawn_cmd = [
             "openclaw", "sessions", "spawn",
@@ -1270,7 +1337,23 @@ def cmd_run(args: argparse.Namespace) -> None:
                 t["completedAt"] = now_iso()
                 t["output"] = json.dumps(result, ensure_ascii=False)
                 
-                # Notify
+                # Notify agent channel - task done
+                notified = t.setdefault("notified", {})
+                if not notified.get("done"):
+                    done_msg = _render_template(
+                        proj,
+                        "agent_done",
+                        {
+                            "project": proj.get("project"),
+                            "task_id": tid,
+                            "agent_id": agent_id,
+                            "raw_output": t["output"][:500],
+                        },
+                    )
+                    _notify_agent(proj, str(agent_id or ""), done_msg)
+                    notified["done"] = now_iso()
+                
+                # Notify main channel
                 _notify_main(
                     proj,
                     _render_template(
