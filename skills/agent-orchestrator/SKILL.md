@@ -72,11 +72,141 @@ $AO execute-task <project> <task_id> [--timeout 600]
 ```bash
 $AO decompose <project> [--json]
 
-Splits request into capability-specific tasks:
-[coding] 实现/开发：...
-[testing] 对已完成的功能进行测试验证...
-[docs] 编写使用文档...
+Splits request into capability-specific tasks based on keywords.
 ```
+
+## Task Decomposition Strategy
+
+### 能力识别（Capability Detection）
+
+系统通过关键词匹配识别任务所需的能力：
+
+```python
+CAPABILITY_CUES = {
+    "research": ["research", "analy", "分析", "调研", "资料", "查找", "收集", "整理"],
+    "coding": ["code", "implement", "refactor", "开发", "实现", "重构", "修复", "脚本", "编写", "编写程序", "编程"],
+    "testing": ["test", "pytest", "unit test", "coverage", "测试", "用例", "覆盖率", "回归", "验证"],
+    "docs": ["doc", "readme", "documentation", "文档", "说明", "总结", "写文档"],
+    "ops": ["deploy", "ops", "monitor", "上线", "监控", "告警", "运维", "部署"],
+    "image": ["image", "poster", "图", "海报", "绘图", "设计"],
+}
+```
+
+### 任务模板（Task Templates）
+
+每个能力对应特定的任务描述模板：
+
+```python
+CAPABILITY_TASK_TEMPLATES = {
+    "research": "进行资料调研与分析：{topic}",
+    "coding": "实现/开发：{topic}",
+    "testing": "测试验证：{topic}（包括功能测试、边界条件、错误处理）",
+    "docs": "编写使用文档：{topic}（包括安装、配置、使用示例）",
+    "ops": "运维部署：{topic}",
+    "image": "设计/绘图：{topic}",
+}
+```
+
+### 分解流程
+
+1. **提取能力**：扫描请求文本，匹配能力关键词
+2. **提取主题**：去除能力关键词，提取核心任务描述
+3. **生成任务**：为每个识别的能力生成独立任务
+4. **任务排序**：按照标准顺序排列（research → coding → testing → docs → ops → image）
+
+### 示例
+
+**输入请求**：
+```
+"编写程序获取 Hacker News 最新 30 条信息 进行测试 完成 使用文档编写"
+```
+
+**识别能力**：`['coding', 'testing', 'docs']`
+
+**生成的任务**：
+```
+Task 1: [coding] 编写程序获取 Hacker News 最新 30 条信息
+Task 2: [testing] 测试验证：...（包括功能测试、边界条件、错误处理）
+Task 3: [docs] 编写使用文档：...（包括安装、配置、使用示例）
+```
+
+### 任务依赖关系
+
+- **linear 模式**：任务按顺序执行，每个任务依赖前一个任务
+- **single 模式**：所有任务合并为一个，由单个 agent 完成
+- **dag 模式**：支持复杂的依赖关系图
+- **debate 模式**：多个 agents 并行讨论和评审
+
+### 智能清理
+
+系统会自动清理任务描述：
+- 移除重复的关键词
+- 清理标点符号
+- 提取核心主题
+- 对于 coding 任务，会移除 testing 和 docs 相关的描述
+
+### 分解示例对比
+
+#### 示例 1：单能力任务
+
+**请求**：
+```
+"访问molt网站获取最火热帖子的内容和讨论信息，分析整理后生成一篇技术博客文章"
+```
+
+**分解结果**：
+```
+识别能力: ['research']
+Task 1: [research] 进行资料调研与分析：访问molt网站获取最火热帖子的内容和讨论信息，分析整理后生成一篇技术博客文章
+```
+
+#### 示例 2：多能力任务
+
+**请求**：
+```
+"开发用户认证模块，进行单元测试，编写API文档"
+```
+
+**分解结果**：
+```
+识别能力: ['coding', 'testing', 'docs']
+Task 1: [coding] 开发用户认证模块
+Task 2: [testing] 测试验证：...（包括功能测试、边界条件、错误处理）
+Task 3: [docs] 编写使用文档：...（包括安装、配置、使用示例）
+```
+
+#### 示例 3：运维任务
+
+**请求**：
+```
+"部署应用到生产环境，配置监控告警"
+```
+
+**分解结果**：
+```
+识别能力: ['ops']
+Task 1: [ops] 运维部署：部署应用到生产环境，配置监控告警
+```
+
+#### 示例 4：默认行为
+
+如果请求中没有任何能力关键词，系统默认为 **coding** 任务：
+```
+"帮我处理这个数据"
+→ 识别能力: ['coding']
+→ Task 1: [coding] 实现功能
+```
+
+### 任务分解策略总结
+
+| 策略维度 | 说明 |
+|---------|------|
+| **关键词匹配** | 通过中英文关键词识别能力类型 |
+| **顺序保证** | 按 research→coding→testing→docs→ops→image 排序 |
+| **智能清理** | 自动移除冗余词汇，提取核心主题 |
+| **模板填充** | 使用预定义模板生成任务描述 |
+| **默认行为** | 无匹配时默认为 coding 能力 |
+| **依赖管理** | 根据执行模式自动设置任务依赖关系 |
 
 #### `pipeline` - Visual Pipeline
 ```bash
