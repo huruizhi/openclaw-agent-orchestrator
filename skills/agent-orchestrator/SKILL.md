@@ -1,104 +1,168 @@
----
-name: agent-orchestrator
-description: Unified multi-agent orchestration skill for OpenClaw. Use when you need to route a natural-language task to the best agent from the full agents pool, generate conservative execution plans (quality > cost > speed), and track orchestration state in /home/ubuntu/.openclaw/data/agent-orchestrator. Supports profile sync from openclaw.json plus manual profile enrichment.
----
-
 # Agent Orchestrator
 
-Use this skill to replace split router/planner workflows with one conservative orchestrator.
+Capability-driven task orchestration for multi-agent workflows.
 
-## Script
-
-- Main CLI: `scripts/orchestrator.py`
-- Data root (default): `/home/ubuntu/.openclaw/data/agent-orchestrator`
-- Override data root: `AO_DATA_DIR`
-
-## Workflow
-
-1. Sync agent pool from OpenClaw config.
-2. Enrich specific agent profiles with manual descriptions/tags.
-3. Initialize project.
-4. Route request to best owner agent.
-5. Build conservative plan.
-6. Check status JSON for execution handoff.
-
-## Commands
+## Quick Start
 
 ```bash
 AO="python3 /home/ubuntu/clawd/skills/agent-orchestrator/scripts/orchestrator.py"
 
-# 1) Sync all agents from openclaw.json
-$AO profile sync
-
-# 2) Optional: enrich an agent profile
-$AO profile set work --desc "General productivity and operations" --tags "general,ops"
-
-# 3) Create project (默认会通知；建议设定通知目标)
-$AO init auth-hardening --goal "Harden auth module" --notify-target 1470703478627237899 --notify-channel discord
-
-# 4) Route natural-language request
-$AO route auth-hardening --request "分析 auth 模块安全风险并给出修复方案"
-
-# 5) Build conservative plan (会先发送编排摘要并等待审计通过)
-$AO plan auth-hardening --mode auto
-
-# 6) 审计确认（必需）
-$AO approve auth-hardening --by rzhu
-
-# 7) Check ready tasks
-$AO next auth-hardening
-
-# 8) Dispatch (prints sessions_spawn payload)
-$AO dispatch auth-hardening
-$AO dispatch auth-hardening --only-task stage-2 --out-json /tmp/ao-dispatch.json
-$AO dispatch auth-hardening --execute --thinking low
-
-# 8) Collect raw output
-$AO collect auth-hardening main "<raw worker output>"
-
-# 8) Failure + retry workflow
-$AO fail auth-hardening main "timeout"
-$AO confirm auth-hardening main
-
-# 9) Relay message payloads (dispatch / done)
-$AO relay auth-hardening main 1470703478627237899 --mode dispatch
-$AO relay auth-hardening main 1470703478627237899 --mode done
-$AO relay auth-hardening main 1470703478627237899 --mode done --execute --channel discord
-
-# 10) Inspect state
-$AO status auth-hardening --json
-$AO show auth-hardening
-$AO audit auth-hardening --tail 20
-$AO validate auth-hardening
-$AO notify auth-hardening --target 1470703478627237899 --channel discord --enabled on
-$AO template auth-hardening show
-$AO template auth-hardening set --key main_dispatch --value "🧭 编排进度 | {project}\ndispatch: {task_id} -> {agent_id}"
-$AO runbook auth-hardening --channel-id 1470703478627237899 --out-json /tmp/ao-runbook.json
-$AO list
-
-# 11) Debate flow (optional)
-$AO debate auth-hardening start
-$AO debate auth-hardening collect work "我的观点..."
-$AO debate auth-hardening review
-$AO debate auth-hardening synthesize
+# One-line execution (recommended)
+$AO init my-project --goal "goal"
+$AO route my-project --request "request"
+$AO run my-project --auto-approve
 ```
 
-## Policy Defaults (v1)
+## Commands
 
-- allow all agents from `agents.list`
-- conservative routing/planning style
-- raw-forward result mode
-- max retries: 3
-- human confirmation required after max retries
-- priority order: quality > cost > speed
+### Core Workflow
+
+```bash
+# 1. Initialize project
+$AO init <project> --goal "goal"
+
+# 2. Route request to agents
+$AO route <project> --request "request"
+
+# 3. Decompose into tasks (optional, auto-called by plan)
+$AO decompose <project>
+
+# 4. Create plan
+$AO plan <project> --mode auto
+
+# 5. Approve
+$AO approve <project> --by <name>
+
+# 6. Execute (NEW!)
+$AO run <project> [--auto-approve] [--timeout 600]
+```
+
+### New Commands
+
+#### `run` - Automated Execution
+```bash
+$AO run <project> [options]
+
+Options:
+  --auto-approve    Auto-approve if not approved
+  --timeout 600     Per-task timeout in seconds
+  --thinking low    Thinking level for agents
+
+Features:
+- Automatically executes all tasks
+- Auto-advances to next task
+- Handles retries (up to 3)
+- Pauses for human confirmation on max retries
+- Sends notifications on completion
+```
+
+#### `execute-task` - Single Task Execution
+```bash
+$AO execute-task <project> <task_id> [--timeout 600]
+```
+
+#### `decompose` - Task Decomposition
+```bash
+$AO decompose <project> [--json]
+
+Splits request into capability-specific tasks:
+[coding] 实现/开发：...
+[testing] 对已完成的功能进行测试验证...
+[docs] 编写使用文档...
+```
+
+#### `pipeline` - Visual Pipeline
+```bash
+$AO pipeline <project>
+
+Outputs Mermaid flowchart showing task dependencies.
+```
+
+### Other Commands
+
+```bash
+# Profile management
+$AO profile sync
+$AO profile set <agent_id> --desc "..." --tags "tag1,tag2"
+
+# Monitoring
+$AO status <project> [--json]
+$AO next <project>
+$AO list
+
+# Manual operations (legacy)
+$AO dispatch <project>
+$AO collect <project> <task_id> "<output>"
+$AO fail <project> <task_id> "<error>"
+$AO confirm <project> <task_id>
+```
+
+## Capabilities
+
+The orchestrator recognizes these capabilities:
+
+- **coding**: 开发、实现、重构、脚本
+- **testing**: 测试、pytest、覆盖率、回归
+- **docs**: 文档、说明、总结
+- **research**: 调研、分析、资料
+- **ops**: 部署、监控、运维
+- **image**: 图、海报、绘图
+
+## Agent Assignment Strategy
+
+1. **Pure capability preference**: Prefers agents with ONLY the target capability
+   - `code` for coding (not `techwriter` which has coding+docs)
+   - `test` for testing
+   - `techwriter` for docs
+
+2. **Fallback to mixed agents** if no pure agent available
+
+3. **Explicit error** if no suitable agent found
+
+## Execution Flow
+
+```
+route → decompose → plan → approve → run
+                                    ↓
+                              execute-task (auto-advance)
+                                    ↓
+                              collect results
+                                    ↓
+                              next task or complete
+```
+
+## Example
+
+```bash
+# Complete workflow
+$AO init hn-top30 --goal "HN Top30"
+$AO route hn-top30 --request "编写程序获取 Hacker News 最新 30 条信息 进行测试 完成 使用文档编写"
+$AO run hn-top30 --auto-approve
+
+# Output:
+# ✅ Task stage-1 completed successfully
+# ✅ Task stage-2 completed successfully  
+# ✅ Task stage-3 completed successfully
+# 🎉 Project hn-top30 completed!
+```
+
+## Policy Defaults
+
+- Capability-aware routing
+- Task decomposition enabled
+- Max retries: 3
+- Human confirmation after max retries
+- Auto-advance on completion
+- Priority: quality > cost > speed
+
+## Data Storage
+
+- Projects: `/home/ubuntu/.openclaw/data/agent-orchestrator/projects/YYYY-MM-DD-<name>/state.json`
+- Profiles: `/home/ubuntu/.openclaw/data/agent-orchestrator/agent-profiles.json`
 
 ## Notes
 
-- 默认通知开启：dispatch / collect / fail(上限) / confirm 都会发送通知。
-- 消息分层：执行 Agent 频道发送详细派发/完成/异常模板；main 频道仅发送流程进度与最终结果。
-- 派发/完成通知优先发送到“被派发 agent 的绑定频道”（读取 openclaw bindings）；找不到时回退到项目默认通知目标。
-- 可通过 `init --notify-target/--notify-channel` 指定通知目标，或使用环境变量 `AO_NOTIFY_TARGET` / `AO_NOTIFY_CHANNEL`。
-- 兼容旧项目：可用 `notify` 命令补充通知配置。
-- 通知机制借鉴 `discord-notify`：优先 `openclaw message send`（带重试），失败时回退到 `discord-notify` 脚本链路。
-- 计划生成后默认进入 `awaiting-approval`，需 `approve` 后才允许 `dispatch`。
-- v1 focuses on profile management, routing, planning, and execution scaffolding.
+- Use `run` for automated execution (recommended)
+- Legacy `dispatch --execute` is deprecated
+- Notifications sent to agent bound channels
+- Supports linear, DAG, and single execution modes
