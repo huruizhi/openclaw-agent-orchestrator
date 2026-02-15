@@ -70,11 +70,8 @@ def _today_str() -> str:
 def project_file(project: str, create: bool = False) -> Path:
     """Resolve project state file path.
 
-    New layout:
+    Layout:
       projects/YYYY-MM-DD-<name>/state.json
-
-    Backward compatibility:
-      projects/<name>.json (legacy)
     """
     safe = _safe_project_name(project)
 
@@ -83,22 +80,17 @@ def project_file(project: str, create: bool = False) -> Path:
     if explicit_dir.is_dir():
         return explicit_dir / "state.json"
 
-    # 2) Legacy file by exact project name
-    legacy = PROJECTS_DIR / f"{safe}.json"
-    if legacy.exists():
-        return legacy
-
-    # 3) Find dated directories ending with -<name>, choose latest by dir name
+    # 2) Find dated directories ending with -<name>, choose latest by dir name
     matches = sorted(PROJECTS_DIR.glob(f"????-??-??-{safe}"))
     if matches:
         return matches[-1] / "state.json"
 
-    # 4) Creating new project -> use today's dated directory
+    # 3) Creating new project -> use today's dated directory
     if create:
         d = PROJECTS_DIR / f"{_today_str()}-{safe}"
         return d / "state.json"
 
-    # 5) Default unresolved location (for clearer not-found error downstream)
+    # 4) Default unresolved location (for clearer not-found error downstream)
     return PROJECTS_DIR / f"{_today_str()}-{safe}" / "state.json"
 
 
@@ -945,17 +937,13 @@ def cmd_next(args: argparse.Namespace) -> None:
 
 def cmd_list(args: argparse.Namespace) -> None:
     ensure_dirs()
-    files = sorted(PROJECTS_DIR.glob("*.json"))  # legacy
-    files.extend(sorted(PROJECTS_DIR.glob("*/state.json")))  # new layout
+    files = sorted(PROJECTS_DIR.glob("*/state.json"))
     if not files:
         print("No projects.")
         return
     for f in files:
         p = load_json(f, default={})
-        if f.name == "state.json":
-            label = p.get("project") or f.parent.name
-        else:
-            label = p.get("project") or f.stem
+        label = p.get("project") or f.parent.name
         print(f"- {label} [{p.get('status','?')}] mode={p.get('plan',{}).get('resolvedMode')}")
 
 
