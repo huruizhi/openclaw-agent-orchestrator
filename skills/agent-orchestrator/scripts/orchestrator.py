@@ -56,11 +56,50 @@ def save_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def project_file(project: str) -> Path:
+def _safe_project_name(project: str) -> str:
     safe = re.sub(r"[^a-zA-Z0-9._-]+", "-", project).strip("-")
     if not safe:
         die("invalid project name")
-    return PROJECTS_DIR / f"{safe}.json"
+    return safe
+
+
+def _today_str() -> str:
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def project_file(project: str, create: bool = False) -> Path:
+    """Resolve project state file path.
+
+    New layout:
+      projects/YYYY-MM-DD-<name>/state.json
+
+    Backward compatibility:
+      projects/<name>.json (legacy)
+    """
+    safe = _safe_project_name(project)
+
+    # 1) Explicit directory name provided (e.g. 2026-02-15-myproj)
+    explicit_dir = PROJECTS_DIR / safe
+    if explicit_dir.is_dir():
+        return explicit_dir / "state.json"
+
+    # 2) Legacy file by exact project name
+    legacy = PROJECTS_DIR / f"{safe}.json"
+    if legacy.exists():
+        return legacy
+
+    # 3) Find dated directories ending with -<name>, choose latest by dir name
+    matches = sorted(PROJECTS_DIR.glob(f"????-??-??-{safe}"))
+    if matches:
+        return matches[-1] / "state.json"
+
+    # 4) Creating new project -> use today's dated directory
+    if create:
+        d = PROJECTS_DIR / f"{_today_str()}-{safe}"
+        return d / "state.json"
+
+    # 5) Default unresolved location (for clearer not-found error downstream)
+    return PROJECTS_DIR / f"{_today_str()}-{safe}" / "state.json"
 
 
 def _render_template(proj: dict[str, Any], key: str, ctx: dict[str, Any]) -> str:
@@ -157,7 +196,7 @@ def cmd_profile_set(args: argparse.Namespace) -> None:
 
 def cmd_init(args: argparse.Namespace) -> None:
     ensure_dirs()
-    pf = project_file(args.project)
+    pf = project_file(args.project, create=True)
     if pf.exists() and not args.force:
         die(f"project exists: {pf} (use --force)")
     data = {
@@ -906,13 +945,18 @@ def cmd_next(args: argparse.Namespace) -> None:
 
 def cmd_list(args: argparse.Namespace) -> None:
     ensure_dirs()
-    files = sorted(PROJECTS_DIR.glob("*.json"))
+    files = sorted(PROJECTS_DIR.glob("*.json"))  # legacy
+    files.extend(sorted(PROJECTS_DIR.glob("*/state.json")))  # new layout
     if not files:
         print("No projects.")
         return
     for f in files:
         p = load_json(f, default={})
-        print(f"- {p.get('project', f.stem)} [{p.get('status','?')}] mode={p.get('plan',{}).get('resolvedMode')}")
+        if f.name == "state.json":
+            label = p.get("project") or f.parent.name
+        else:
+            label = p.get("project") or f.stem
+        print(f"- {label} [{p.get('status','?')}] mode={p.get('plan',{}).get('resolvedMode')}")
 
 
 def cmd_show(args: argparse.Namespace) -> None:
