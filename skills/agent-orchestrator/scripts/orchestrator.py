@@ -319,6 +319,43 @@ def _pick_candidate_by_tag(candidates: list[dict[str, Any]], tag: str) -> str | 
     return None
 
 
+def _task_node_id(task_id: str) -> str:
+    nid = re.sub(r"[^a-zA-Z0-9_]", "_", task_id)
+    if not nid:
+        nid = "task"
+    if nid[0].isdigit():
+        nid = f"t_{nid}"
+    return nid
+
+
+def _tasks_mermaid(proj: dict[str, Any]) -> str:
+    tasks = proj.get("tasks", {}) or {}
+    lines = ["flowchart TD"]
+    if not tasks:
+        lines.append("  empty[\"(no tasks)\"]")
+        return "\n".join(lines)
+
+    # Nodes: only real tasks
+    for tid, t in tasks.items():
+        nid = _task_node_id(tid)
+        label = f"{tid}: {t.get('agentId','')}"
+        lines.append(f"  {nid}[\"{label}\"]")
+
+    # Edges: dependencies only
+    edge_count = 0
+    for tid, t in tasks.items():
+        to_id = _task_node_id(tid)
+        for dep in (t.get("dependsOn", []) or []):
+            if dep in tasks:
+                from_id = _task_node_id(dep)
+                lines.append(f"  {from_id} --> {to_id}")
+                edge_count += 1
+
+    # If no dependencies, keep only task nodes (no helper nodes added)
+    _ = edge_count
+    return "\n".join(lines)
+
+
 def cmd_plan(args: argparse.Namespace) -> None:
     ensure_dirs()
     pf = project_file(args.project)
@@ -391,6 +428,9 @@ def cmd_plan(args: argparse.Namespace) -> None:
     save_json(pf, proj)
 
     print(f"✅ plan ready: {resolved}, tasks={len(tasks)} (awaiting approval)")
+    print("\n```mermaid")
+    print(_tasks_mermaid(proj))
+    print("```")
 
 
 def cmd_status(args: argparse.Namespace) -> None:
@@ -907,6 +947,13 @@ def cmd_relay(args: argparse.Namespace) -> None:
             print(json.dumps(p, ensure_ascii=False, indent=2))
 
 
+def cmd_pipeline(args: argparse.Namespace) -> None:
+    _, proj = _load_project_or_die(args.project)
+    print("```mermaid")
+    print(_tasks_mermaid(proj))
+    print("```")
+
+
 def cmd_next(args: argparse.Namespace) -> None:
     _, proj = _load_project_or_die(args.project)
     tasks = proj.get("tasks", {}) or {}
@@ -1219,6 +1266,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("project")
     sp.add_argument("--json", "-j", action="store_true")
 
+    sp = sub.add_parser("pipeline", help="print task-only pipeline as Mermaid")
+    sp.add_argument("project")
+
     sp = sub.add_parser("approve", help="approve orchestration plan after user audit")
     sp.add_argument("project")
     sp.add_argument("--by", default="")
@@ -1313,6 +1363,8 @@ def main() -> None:
         cmd_status(args)
     elif args.cmd == "next":
         cmd_next(args)
+    elif args.cmd == "pipeline":
+        cmd_pipeline(args)
     elif args.cmd == "approve":
         cmd_approve(args)
     elif args.cmd == "dispatch":
