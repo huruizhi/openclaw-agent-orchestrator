@@ -1,6 +1,9 @@
 # Environment variables
 .env
 
+# Workspace
+workspace/
+
 # Python
 __pycache__/
 *.py[cod]

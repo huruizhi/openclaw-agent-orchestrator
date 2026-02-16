@@ -16,6 +16,8 @@ cp .env.example .env
 | `LLM_API_KEY` | **Yes** | - | Your API key |
 | `LLM_MODEL` | No | `openai/gpt-4` | Model to use |
 | `LLM_TIMEOUT` | No | `60` | Request timeout in seconds |
+| `BASE_PATH` | No | `./workspace` | Base path for all operations |
+| `PROJECT_ID` | No | `default_project` | Project identifier |
 
 ### Example .env
 
@@ -24,7 +26,32 @@ LLM_URL=https://openrouter.ai/api/v1/chat/completions
 LLM_API_KEY=sk-or-v1-xxxxx
 LLM_MODEL=openai/gpt-4
 LLM_TIMEOUT=60
+BASE_PATH=./workspace
+PROJECT_ID=hn_blog_project
 ```
+
+### Directory Structure
+
+All metadata is stored under `BASE_PATH/<PROJECT_ID>/.orchestrator/`:
+
+```
+BASE_PATH/
+└── PROJECT_ID/          # Project-specific directory
+    ├── .orchestrator/   # System metadata
+    │   ├── tasks/      # Task metadata files
+    │   ├── state/      # Run state files
+    │   ├── logs/       # Execution logs
+    │   └── runs/       # Run history
+    ├── tasks/          # Task-specific directories
+    └── {artifacts}     # Output files
+```
+
+This allows multiple projects to coexist without interference:
+- `workspace/hn_blog/.orchestrator/`
+- `workspace/api_dev/.orchestrator/`
+- `workspace/data_analysis/.orchestrator/`
+
+See `utils/PATHS.md` for detailed path documentation.
 
 ### Supported Providers
 
