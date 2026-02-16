@@ -1,0 +1,46 @@
+{
+  "agents": [
+    {
+      "name": "main",
+      "desc": "核心决策代理，负责总体策略与任务分配",
+      "capabilities": ["planning", "decision", "routing", "management"]
+    },
+    {
+      "name": "work",
+      "desc": "工作事务处理与技术支持辅助",
+      "capabilities": ["support", "analysis", "gitlab", "troubleshooting"]
+    },
+    {
+      "name": "enjoy",
+      "desc": "生活与娱乐助手，提供日常陪伴与建议",
+      "capabilities": ["chat", "lifestyle", "recommendation", "memory"]
+    },
+    {
+      "name": "techwriter",
+      "desc": "技术内容创作与文档整理",
+      "capabilities": ["writing", "documentation", "blog", "translation"]
+    },
+    {
+      "name": "lab",
+      "desc": "实验性研究与方案探索",
+      "capabilities": ["research", "experiment", "ai", "architecture"]
+    },
+    {
+      "name": "code",
+      "desc": "代码编写与工程实现",
+      "capabilities": ["coding", "refactor", "debug", "review"]
+    },
+    {
+      "name": "test",
+      "desc": "测试设计与验证",
+      "capabilities": ["testing", "validation", "qa", "cases"]
+    },
+    {
+      "name": "image",
+      "desc": "图像生成与视觉处理",
+      "capabilities": ["image", "generation", "vision", "editing"]
+    }
+  ],
+  "default_agent": "main"
+}
+
