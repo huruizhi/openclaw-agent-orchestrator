@@ -1,6 +1,7 @@
 """Example: Integrating logging into M2 and M3 modules."""
 
 import sys
+import os
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -8,6 +9,52 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.logger import get_logger, get_run_logger, log_context, log_function_call
 from m2 import decompose
 from m3 import build_execution_graph
+
+
+def _use_real_llm() -> bool:
+    """Enable real LLM calls only when explicitly requested."""
+    return os.getenv("RUN_REAL_LLM_TESTS", "").lower() in {"1", "true", "yes"}
+
+
+def _get_demo_tasks(goal: str) -> dict:
+    """Use real LLM only when enabled; otherwise return deterministic fixture."""
+    if _use_real_llm():
+        return decompose(goal)
+
+    return {
+        "tasks": [
+            {
+                "id": "tsk_01H8VK0J4R2Q3YN9XMWDPESZA1",
+                "title": "Define API scope",
+                "status": "pending",
+                "deps": [],
+                "inputs": [],
+                "outputs": ["api_scope.md"],
+                "done_when": ["api_scope.md created"],
+                "assigned_to": None,
+            },
+            {
+                "id": "tsk_01H8VK0J4R2Q3YN9XMWDPESZA2",
+                "title": "Design endpoints",
+                "status": "pending",
+                "deps": ["tsk_01H8VK0J4R2Q3YN9XMWDPESZA1"],
+                "inputs": ["api_scope.md"],
+                "outputs": ["endpoints.yaml"],
+                "done_when": ["endpoints.yaml created"],
+                "assigned_to": None,
+            },
+            {
+                "id": "tsk_01H8VK0J4R2Q3YN9XMWDPESZA3",
+                "title": "Write implementation notes",
+                "status": "pending",
+                "deps": ["tsk_01H8VK0J4R2Q3YN9XMWDPESZA2"],
+                "inputs": ["endpoints.yaml"],
+                "outputs": ["impl_notes.md"],
+                "done_when": ["impl_notes.md created"],
+                "assigned_to": None,
+            },
+        ]
+    }
 
 
 def demo_logging_in_m2():
@@ -29,8 +76,12 @@ def demo_logging_in_m2():
             # Log the LLM call
             logger.info("Calling LLM for task decomposition")
 
-            # Call decompose (M2)
-            tasks_dict = decompose(goal)
+            # Call decompose (M2) or offline fixture
+            if _use_real_llm():
+                logger.info("RUN_REAL_LLM_TESTS enabled, using real LLM")
+            else:
+                logger.info("RUN_REAL_LLM_TESTS disabled, using mock tasks")
+            tasks_dict = _get_demo_tasks(goal)
 
             # Log result
             logger.info(f"Decomposition completed: {len(tasks_dict['tasks'])} tasks generated")
@@ -101,7 +152,7 @@ def demo_run_logger():
 
     # Phase 1: Decompose
     run_logger.info("Phase 1: Task Decomposition")
-    tasks_dict = decompose(goal)
+    tasks_dict = _get_demo_tasks(goal)
     run_logger.info(
         "Decomposition completed",
         task_count=len(tasks_dict['tasks']),
@@ -218,8 +269,8 @@ if __name__ == "__main__":
     print("Logging Integration Examples")
     print("=" * 70)
 
-    demo_logging_in_m2()
-    demo_logging_in_m3(demo_logging_in_m2())
+    tasks = demo_logging_in_m2()
+    demo_logging_in_m3(tasks)
     demo_run_logger()
     demo_task_execution_logging()
     demo_error_logging()

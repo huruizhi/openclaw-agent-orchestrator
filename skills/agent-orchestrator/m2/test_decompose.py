@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from unittest.mock import patch, Mock
 from pathlib import Path
@@ -7,6 +8,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from m2.decompose import decompose, strip_codeblock
 from m2.validate import validate_tasks
+
+
+def _use_real_llm() -> bool:
+    """Enable real LLM calls only when explicitly requested."""
+    return os.getenv("RUN_REAL_LLM_TESTS", "").lower() in {"1", "true", "yes"}
+
 
 MOCK_LLM_RESPONSE = """{
   "tasks": [
@@ -127,9 +134,13 @@ def test_invalid_response_handling():
 def test_real_api_call():
     print("\n" + "="*50)
     print("REAL API CALL TEST")
-    print("This will call the actual LLM API")
-    print("Make sure LLM_URL and LLM_KEY are set correctly")
+    print("This section is optional and disabled by default")
+    print("Set RUN_REAL_LLM_TESTS=1 to enable real LLM call")
     print("="*50)
+
+    if not _use_real_llm():
+        print("\n- Skipped real API call (RUN_REAL_LLM_TESTS not enabled)")
+        return
 
     try:
         result = decompose("分析 GitLab Geo 同步延迟")

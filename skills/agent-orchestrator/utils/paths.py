@@ -1,9 +1,11 @@
 """Path management for OpenClaw workspace.
 
-All metadata is stored under BASE_PATH/<PROJECT_ID>/.orchestrator/
+All metadata is stored under BASE_PATH/<PROJECT_ID>/.orchestrator/.
+If BASE_PATH is not writable, fallback to local ./workspace.
 """
 
 import os
+import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -11,7 +13,35 @@ from dotenv import load_dotenv
 env_path = Path(__file__).parent.parent / ".env"
 load_dotenv(env_path)
 
-BASE_PATH = Path(os.getenv("BASE_PATH", "./workspace"))
+PROJECT_ROOT = Path(__file__).parent.parent
+
+
+def _is_writable_dir(path: Path) -> bool:
+    """Return True when directory is writable (or creatable and writable)."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=path, delete=True):
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _resolve_base_path() -> Path:
+    """Resolve BASE_PATH from env with safe writable fallback."""
+    configured = Path(os.getenv("BASE_PATH", "./workspace")).expanduser()
+    if not configured.is_absolute():
+        configured = (PROJECT_ROOT / configured).resolve()
+
+    if _is_writable_dir(configured):
+        return configured
+
+    fallback = (PROJECT_ROOT / "workspace").resolve()
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
+
+
+BASE_PATH = _resolve_base_path()
 PROJECT_ID = os.getenv("PROJECT_ID", "default_project")
 
 # Add project_id layer to hierarchy

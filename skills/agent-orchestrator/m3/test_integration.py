@@ -2,12 +2,66 @@
 
 import sys
 import json
+import os
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from m2 import decompose
 from m3 import build_execution_graph
+
+
+def _use_real_llm() -> bool:
+    """Enable real LLM calls only when explicitly requested."""
+    return os.getenv("RUN_REAL_LLM_TESTS", "").lower() in {"1", "true", "yes"}
+
+
+def _mock_tasks() -> dict:
+    """Offline task fixture for deterministic integration testing."""
+    return {
+        "tasks": [
+            {
+                "id": "tsk_01H8VK0J4R2Q3YN9XMWDPESZA1",
+                "title": "Fetch HN top posts",
+                "status": "pending",
+                "deps": [],
+                "inputs": [],
+                "outputs": ["hn_posts.json"],
+                "done_when": ["hn_posts.json saved"],
+                "assigned_to": None,
+            },
+            {
+                "id": "tsk_01H8VK0J4R2Q3YN9XMWDPESZA2",
+                "title": "Analyze post content",
+                "status": "pending",
+                "deps": ["tsk_01H8VK0J4R2Q3YN9XMWDPESZA1"],
+                "inputs": ["hn_posts.json"],
+                "outputs": ["analysis.md"],
+                "done_when": ["analysis.md generated"],
+                "assigned_to": None,
+            },
+            {
+                "id": "tsk_01H8VK0J4R2Q3YN9XMWDPESZA3",
+                "title": "Write blog draft",
+                "status": "pending",
+                "deps": ["tsk_01H8VK0J4R2Q3YN9XMWDPESZA2"],
+                "inputs": ["analysis.md"],
+                "outputs": ["blog_draft.md"],
+                "done_when": ["blog_draft.md generated"],
+                "assigned_to": None,
+            },
+            {
+                "id": "tsk_01H8VK0J4R2Q3YN9XMWDPESZA4",
+                "title": "Prepare email summary",
+                "status": "pending",
+                "deps": ["tsk_01H8VK0J4R2Q3YN9XMWDPESZA3"],
+                "inputs": ["blog_draft.md"],
+                "outputs": ["email_payload.json"],
+                "done_when": ["email_payload.json generated"],
+                "assigned_to": None,
+            },
+        ]
+    }
 
 
 def test_m2_m3_pipeline():
@@ -21,7 +75,12 @@ def test_m2_m3_pipeline():
 
     # M2: Decompose goal into tasks
     print("\nStep 1: M2 - Decomposing goal...")
-    tasks_dict = decompose(goal)
+    if _use_real_llm():
+        print("  Using real LLM (RUN_REAL_LLM_TESTS enabled)")
+        tasks_dict = decompose(goal)
+    else:
+        print("  Using mock tasks (offline deterministic mode)")
+        tasks_dict = _mock_tasks()
 
     print(f"✓ Generated {len(tasks_dict['tasks'])} tasks")
     for i, task in enumerate(tasks_dict['tasks'], 1):

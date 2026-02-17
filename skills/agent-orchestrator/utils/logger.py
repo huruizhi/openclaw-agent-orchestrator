@@ -1,46 +1,83 @@
 """Unified logging system for OpenClaw.
 
-Single logging system based on Python logging module with JSON output.
-All logs are saved to BASE_PATH/<PROJECT_ID>/logs/
+Primary API:
+  - setup_logging / get_logger / ExtraAdapter / RunLogger
+
+Backward-compatible API (kept for existing scripts/tests):
+  - setup_logger / SimpleLogger / StructuredLogger
+  - get_simple_logger / get_structured_logger / log_context
 """
 
-import logging
 import json
+import logging
 import sys
-import os
-from pathlib import Path
+from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Dict, Iterator, Optional, Union
 
-from dotenv import load_dotenv
+try:
+    from utils.paths import LOGS_DIR, PROJECT_ID, init_workspace
+except ImportError:
+    from paths import LOGS_DIR, PROJECT_ID, init_workspace
 
-# Load .env from project root
-env_path = Path(__file__).parent.parent / ".env"
-load_dotenv(env_path)
 
-# Get paths directly to avoid circular import
-BASE_PATH = Path(os.getenv("BASE_PATH", "./workspace"))
-PROJECT_ID = os.getenv("PROJECT_ID", "default_project")
-PROJECT_DIR = BASE_PATH / PROJECT_ID
+class KwargLogger(logging.Logger):
+    """Logger that accepts arbitrary keyword fields in log calls."""
+
+    @staticmethod
+    def _split_kwargs(kwargs: Dict[str, Any]):
+        known = {"exc_info", "stack_info", "stacklevel", "extra"}
+        clean = {}
+        dynamic = {}
+        for key, value in kwargs.items():
+            if key in known:
+                clean[key] = value
+            else:
+                dynamic[key] = value
+        return clean, dynamic
+
+    def _merge_extra(self, kwargs: Dict[str, Any], dynamic: Dict[str, Any]):
+        if not dynamic:
+            return kwargs
+        extra = kwargs.get("extra", {})
+        if isinstance(extra, dict):
+            merged = dict(extra.get("extra_fields", {}))
+            merged.update(dynamic)
+            kwargs["extra"] = {"extra_fields": merged}
+        else:
+            kwargs["extra"] = {"extra_fields": dynamic}
+        return kwargs
+
+    def debug(self, msg, *args, **kwargs):
+        clean, dynamic = self._split_kwargs(kwargs)
+        super().debug(msg, *args, **self._merge_extra(clean, dynamic))
+
+    def info(self, msg, *args, **kwargs):
+        clean, dynamic = self._split_kwargs(kwargs)
+        super().info(msg, *args, **self._merge_extra(clean, dynamic))
+
+    def warning(self, msg, *args, **kwargs):
+        clean, dynamic = self._split_kwargs(kwargs)
+        super().warning(msg, *args, **self._merge_extra(clean, dynamic))
+
+    def error(self, msg, *args, **kwargs):
+        clean, dynamic = self._split_kwargs(kwargs)
+        super().error(msg, *args, **self._merge_extra(clean, dynamic))
+
+    def critical(self, msg, *args, **kwargs):
+        clean, dynamic = self._split_kwargs(kwargs)
+        super().critical(msg, *args, **self._merge_extra(clean, dynamic))
+
+
+logging.setLoggerClass(KwargLogger)
 
 
 class JSONFormatter(logging.Formatter):
-    """Custom JSON formatter for structured logging.
-
-    Outputs logs as JSON objects with timestamp, level, message, and extra fields.
-    """
+    """Format log records into JSON lines."""
 
     def format(self, record: logging.LogRecord) -> str:
-        """Format log record as JSON.
-
-        Args:
-            record: Log record to format
-
-        Returns:
-            JSON string
-        """
-        # Create base log entry
-        log_entry = {
+        entry = {
             "timestamp": datetime.fromtimestamp(record.created).isoformat(),
             "level": record.levelname,
             "logger": record.name,
@@ -50,297 +87,265 @@ class JSONFormatter(logging.Formatter):
             "line": record.lineno,
         }
 
-        # Add extra fields from record
-        if hasattr(record, 'extra_fields'):
-            log_entry.update(record.extra_fields)
+        if hasattr(record, "extra_fields"):
+            entry.update(record.extra_fields)
+        elif hasattr(record, "task_id"):
+            # Compatibility for plain logger calls using logging's `extra`.
+            entry.update(
+                {
+                    k: getattr(record, k)
+                    for k in ("task_id", "title", "outputs", "duration_ms")
+                    if hasattr(record, k)
+                }
+            )
 
-        # Add exception info if present
         if record.exc_info:
-            log_entry["exception"] = self.formatException(record.exc_info)
+            entry["exception"] = self.formatException(record.exc_info)
 
-        return json.dumps(log_entry, ensure_ascii=False)
+        return json.dumps(entry, ensure_ascii=False)
+
+
+def _coerce_log_file(log_file: Optional[Union[str, Path]]) -> Path:
+    """Resolve log file path and ensure parent exists."""
+    if log_file is None:
+        init_workspace()
+        path = LOGS_DIR / "orchestrator_log.json"
+    else:
+        path = Path(log_file)
+        if not path.is_absolute():
+            path = LOGS_DIR / path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def setup_logging(
-    log_file: Optional[Path] = None,
+    log_file: Optional[Union[str, Path]] = None,
     level: int = logging.INFO,
-    also_console: bool = False
+    also_console: bool = False,
 ) -> None:
-    """Setup global logging configuration.
+    """Setup root logger with JSON file output."""
+    resolved = _coerce_log_file(log_file)
 
-    This function should be called once at application startup.
+    root = logging.getLogger()
+    root.setLevel(level)
+    root.handlers.clear()
 
-    Args:
-        log_file: Path to log file (uses default if None)
-        level: Logging level (DEBUG, INFO, WARNING, ERROR)
-        also_console: Whether to also output to console
-
-    Example:
-        >>> setup_logging(level=logging.INFO, also_console=True)
-        >>> logger = get_logger(__name__)
-        >>> logger.info("Message")
-    """
-    # Determine log file path
-    if log_file is None:
-        logs_dir = PROJECT_DIR / "logs"
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        log_file = logs_dir / "orchestrator_log.json"
-
-    # Configure root logger
-    root_logger = logging.getLogger()
-    root_logger.setLevel(level)
-
-    # Remove existing handlers to avoid duplicates
-    root_logger.handlers.clear()
-
-    # JSON file handler
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    file_handler = logging.FileHandler(resolved, encoding="utf-8")
     file_handler.setLevel(level)
     file_handler.setFormatter(JSONFormatter())
-    root_logger.addHandler(file_handler)
+    root.addHandler(file_handler)
 
-    # Console handler (optional, human-readable format)
     if also_console:
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(level)
-        console_formatter = logging.Formatter(
-            fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
+        console = logging.StreamHandler(sys.stdout)
+        console.setLevel(level)
+        console.setFormatter(
+            logging.Formatter(
+                fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
         )
-        console_handler.setFormatter(console_formatter)
-        root_logger.addHandler(console_handler)
+        root.addHandler(console)
 
 
 def get_logger(name: str = __name__) -> logging.Logger:
-    """Get a logger instance.
-
-    Args:
-        name: Logger name (usually __name__)
-
-    Returns:
-        Logger instance
-
-    Example:
-        >>> logger = get_logger(__name__)
-        >>> logger.info("Message", extra_field="value")
-    """
+    """Get logger by name."""
     return logging.getLogger(name)
 
 
 class ExtraAdapter(logging.LoggerAdapter):
-    """Logger adapter for adding extra fields to log records.
-
-    Allows adding context fields to log messages.
-
-    Example:
-        >>> logger = get_logger(__name__)
-        >>> adapter = ExtraAdapter(logger, {"task_id": "tsk_123"})
-        >>> adapter.info("Task started")
-        # Output: {"timestamp": "...", "level": "INFO", "message": "Task started", "task_id": "tsk_123"}
-    """
-
-    def __init__(self, logger: logging.Logger, extra: Dict[str, Any]):
-        """Initialize adapter with extra fields.
-
-        Args:
-            logger: Underlying logger
-            extra: Dictionary of extra fields to add to all log messages
-        """
-        super().__init__(logger, extra)
-        self.extra = extra
+    """Logger adapter that accepts extra kwargs as structured fields."""
 
     def process(self, msg, kwargs):
-        """Add extra fields to log record.
+        extra = dict(self.extra)
 
-        Args:
-            msg: Log message
-            kwargs: Keyword arguments for log call
+        if "extra" in kwargs:
+            raw_extra = kwargs.pop("extra")
+            if isinstance(raw_extra, dict):
+                extra.update(raw_extra)
 
-        Returns:
-            Tuple of (msg, kwargs)
-        """
-        # Start with adapter's base extra fields
-        extra = self.extra.copy()
+        known_keys = {"exc_info", "stack_info", "stacklevel"}
+        for key in list(kwargs.keys()):
+            if key not in known_keys:
+                extra[key] = kwargs.pop(key)
 
-        # Add any extra dict passed via kwargs['extra']
-        if 'extra' in kwargs:
-            extra.update(kwargs.pop('extra'))
-
-        # Add all other keyword arguments as extra fields
-        # This allows: logger.info("msg", task_id="xxx") instead of logger.info("msg", extra={"task_id": "xxx"})
-        known_logging_keys = {'exc_info', 'stack_info', 'stacklevel'}
-        for key, value in list(kwargs.items()):
-            if key not in known_logging_keys:
-                extra[key] = value
-                kwargs.pop(key)
-
-        kwargs['extra'] = {'extra_fields': extra}
+        kwargs["extra"] = {"extra_fields": extra}
         return msg, kwargs
 
 
-# ============================================================================
-# Convenience Functions
-# ============================================================================
+def setup_logger(
+    name: str,
+    log_file: Optional[Union[str, Path]] = None,
+    level: int = logging.INFO,
+    also_console: bool = False,
+) -> logging.Logger:
+    """Backward-compatible alias: configure root logger and return named logger."""
+    setup_logging(log_file=log_file, level=level, also_console=also_console)
+    return get_logger(name)
+
+
+class SimpleLogger:
+    """Very simple line-based file logger."""
+
+    def __init__(self, log_file: Union[str, Path]):
+        self.log_file = _coerce_log_file(log_file)
+
+    def _write(self, level: str, message: str):
+        line = f"{datetime.now().isoformat()} [{level}] {message}\n"
+        with open(self.log_file, "a", encoding="utf-8") as f:
+            f.write(line)
+
+    def debug(self, message: str):
+        self._write("DEBUG", message)
+
+    def info(self, message: str):
+        self._write("INFO", message)
+
+    def warning(self, message: str):
+        self._write("WARNING", message)
+
+    def error(self, message: str):
+        self._write("ERROR", message)
+
+
+def get_simple_logger(log_file: Union[str, Path] = "simple.log") -> SimpleLogger:
+    """Create a SimpleLogger."""
+    return SimpleLogger(log_file)
+
+
+class StructuredLogger:
+    """JSONL logger for machine-readable logs."""
+
+    def __init__(self, log_file: Union[str, Path]):
+        self.log_file = _coerce_log_file(log_file)
+
+    def _write(self, level: str, message: str, **kwargs):
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "level": level,
+            "message": message,
+            **kwargs,
+        }
+        with open(self.log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def debug(self, message: str, **kwargs):
+        self._write("DEBUG", message, **kwargs)
+
+    def info(self, message: str, **kwargs):
+        self._write("INFO", message, **kwargs)
+
+    def warning(self, message: str, **kwargs):
+        self._write("WARNING", message, **kwargs)
+
+    def error(self, message: str, **kwargs):
+        self._write("ERROR", message, **kwargs)
+
+
+def get_structured_logger(
+    log_file: Union[str, Path] = "structured.jsonl",
+) -> StructuredLogger:
+    """Create a StructuredLogger."""
+    return StructuredLogger(log_file)
+
 
 def log_function_call(logger: logging.Logger, func_name: str, **kwargs):
-    """Log function call with parameters.
-
-    Args:
-        logger: Logger instance
-        func_name: Name of the function
-        **kwargs: Function parameters
-
-    Example:
-        >>> log_function_call(logger, "decompose", goal="test")
-        # Output: {"timestamp": "...", "message": "Calling decompose(goal='test')", ...}
-    """
-    params_str = ', '.join(f'{k}={repr(v)}' for k, v in kwargs.items())
-    logger.debug(f"Calling {func_name}({params_str})")
+    """Log function call with parameters."""
+    params = ", ".join(f"{k}={repr(v)}" for k, v in kwargs.items())
+    logger.debug(f"Calling {func_name}({params})")
 
 
 def log_error(logger: logging.Logger, error: Exception, context: Optional[Dict] = None):
-    """Log exception with context.
-
-    Args:
-        logger: Logger instance
-        error: Exception object
-        context: Optional context dictionary
-
-    Example:
-        >>> try:
-        ...     risky_operation()
-        ... except Exception as e:
-        ...     log_error(logger, e, context={"task_id": "tsk_123"})
-    """
+    """Log error plus optional context."""
     logger.error(f"{type(error).__name__}: {error}", exc_info=True)
     if context:
         logger.error(f"Context: {context}")
 
 
-# ============================================================================
-# Run-specific Logger
-# ============================================================================
+@contextmanager
+def log_context(logger: logging.Logger, title: str) -> Iterator[None]:
+    """Context manager that logs section start/end and exceptions."""
+    logger.info(f"[START] {title}")
+    try:
+        yield
+        logger.info(f"[END] {title}")
+    except Exception:
+        logger.exception(f"[FAIL] {title}")
+        raise
+
 
 class RunLogger:
-    """Logger for a specific run with additional context.
-
-    Provides convenience methods for logging task-related events.
-
-    Example:
-        >>> run_logger = RunLogger("run_001", goal="Build API")
-        >>> run_logger.info("Run started")
-        >>> run_logger.log_task("tsk_123", "completed", output="result.json")
-    """
+    """Run-scoped logger with convenience methods and compatibility fields."""
 
     def __init__(self, run_id: str, **context):
-        """Initialize run-specific logger.
-
-        Args:
-            run_id: Run identifier
-            **context: Additional context fields (goal, project, etc.)
-        """
+        init_workspace()
         self.run_id = run_id
         self.context = context
+        self.log_file = LOGS_DIR / f"{run_id}.log"
+        self.structured_file = LOGS_DIR / f"{run_id}.jsonl"
+
         self.logger = ExtraAdapter(
             get_logger(f"run.{run_id}"),
-            {"run_id": run_id, **context}
+            {"run_id": run_id, **context},
         )
+        self._simple = SimpleLogger(self.log_file)
+        self._structured = StructuredLogger(self.structured_file)
+
+    def _emit(self, level: str, message: str, **kwargs):
+        # Unified structured root logging
+        if level == "DEBUG":
+            self.logger.debug(message, extra=kwargs)
+            self._simple.debug(message)
+            self._structured.debug(message, **kwargs)
+        elif level == "WARNING":
+            self.logger.warning(message, extra=kwargs)
+            self._simple.warning(message)
+            self._structured.warning(message, **kwargs)
+        elif level == "ERROR":
+            self.logger.error(message, extra=kwargs)
+            self._simple.error(message)
+            self._structured.error(message, **kwargs)
+        elif level == "CRITICAL":
+            self.logger.critical(message, extra=kwargs)
+            self._simple.error(message)
+            self._structured.error(message, **kwargs)
+        else:
+            self.logger.info(message, extra=kwargs)
+            self._simple.info(message)
+            self._structured.info(message, **kwargs)
 
     def info(self, message: str, **kwargs):
-        """Log info message."""
-        self.logger.info(message, extra=kwargs)
+        self._emit("INFO", message, **kwargs)
 
     def debug(self, message: str, **kwargs):
-        """Log debug message."""
-        self.logger.debug(message, extra=kwargs)
+        self._emit("DEBUG", message, **kwargs)
 
     def warning(self, message: str, **kwargs):
-        """Log warning message."""
-        self.logger.warning(message, extra=kwargs)
+        self._emit("WARNING", message, **kwargs)
 
     def error(self, message: str, **kwargs):
-        """Log error message."""
-        self.logger.error(message, extra=kwargs)
+        self._emit("ERROR", message, **kwargs)
 
     def critical(self, message: str, **kwargs):
-        """Log critical message."""
-        self.logger.critical(message, extra=kwargs)
+        self._emit("CRITICAL", message, **kwargs)
 
     def log_task(self, task_id: str, event: str, **kwargs):
-        """Log task-specific event.
-
-        Args:
-            task_id: Task identifier
-            event: Event type (started, progress, completed, failed, etc.)
-            **kwargs: Additional event data
-
-        Example:
-            >>> run_logger.log_task("tsk_123", "started", title="Fetch data")
-            >>> run_logger.log_task("tsk_123", "progress", step=1, total=5)
-            >>> run_logger.log_task("tsk_123", "completed", outputs=["data.json"])
-        """
         self.info(f"Task {task_id}: {event}", task_id=task_id, event=event, **kwargs)
 
     def log_llm_call(self, prompt: str, response: str, tokens_used: int, **kwargs):
-        """Log LLM API call.
-
-        Args:
-            prompt: Prompt text
-            response: Response text
-            tokens_used: Number of tokens used
-            **kwargs: Additional call data
-        """
         self.info(
             "LLM call",
             event="llm_call",
             prompt_length=len(prompt),
             response_length=len(response),
             tokens_used=tokens_used,
-            **kwargs
+            **kwargs,
         )
 
 
 def get_run_logger(run_id: Optional[str] = None, **context) -> RunLogger:
-    """Get or create a run-specific logger.
-
-    Args:
-        run_id: Run identifier (uses timestamp if None)
-        **context: Additional context fields (goal, project_id, etc.)
-
-    Returns:
-        RunLogger instance
-
-    Example:
-        >>> run_logger = get_run_logger(goal="Build API")
-        >>> run_logger.info("Starting...")
-    """
+    """Create run logger with default timestamp run_id."""
     if run_id is None:
-        run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
-
-    # Add project context
-    if 'project_id' not in context:
-        context['project_id'] = PROJECT_ID
-
+        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if "project_id" not in context:
+        context["project_id"] = PROJECT_ID
     return RunLogger(run_id, **context)
-
-
-# ============================================================================
-# Convenience: Auto-setup on import
-# ============================================================================
-
-# Setup logging automatically when module is imported
-# This ensures logs are written even if setup_logging() is not called
-_setup_done = False
-
-def _ensure_logging_setup():
-    """Ensure logging is setup (called automatically)."""
-    global _setup_done
-    if not _setup_done:
-        # Setup with default config (JSON file only, no console)
-        # Defer to avoid execution during import
-        pass
-        _setup_done = True
-
-
-# Auto-setup on module import
-_ensure_logging_setup()
