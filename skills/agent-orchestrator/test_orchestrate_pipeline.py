@@ -8,6 +8,15 @@ sys.path.insert(0, str(Path(__file__).parent))
 from orchestrate import orchestrate
 
 
+class DummyNotifier:
+    def __init__(self):
+        self.events = []
+
+    def notify(self, agent, event, payload):
+        self.events.append({"agent": agent, "event": event, "payload": payload})
+        return True
+
+
 def test_orchestrate_with_override():
     tasks = {
         "tasks": [
@@ -36,12 +45,17 @@ def test_orchestrate_with_override():
         ]
     }
 
-    result = orchestrate("offline test goal", tasks_override=tasks)
+    notifier = DummyNotifier()
+    result = orchestrate("offline test goal", tasks_override=tasks, notifier=notifier)
     states = result["execution"]["state"]["tasks"]
 
     assert states["tsk_a"]["status"] == "completed"
     assert states["tsk_b"]["status"] == "failed"
     assert states["tsk_b"]["attempts"] >= 1
+    events = [e["event"] for e in notifier.events]
+    assert "task_dispatched" in events
+    assert "task_completed" in events
+    assert ("task_failed" in events) or ("task_retry" in events)
     print("✓ Orchestrate offline pipeline test passed")
 
 

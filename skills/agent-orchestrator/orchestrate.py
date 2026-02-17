@@ -13,6 +13,7 @@ from m4 import TaskStateStore
 from m6 import Scheduler
 from m7 import execute_task
 from utils.paths import RUNS_DIR, init_workspace
+from utils.notifier import AgentChannelNotifier
 
 # Import unified logging system
 try:
@@ -95,7 +96,7 @@ def _apply_openclaw_mapping(tasks_dict: dict) -> None:
     )
 
 
-def orchestrate(goal: str, tasks_override: dict = None) -> dict:
+def orchestrate(goal: str, tasks_override: dict = None, notifier: AgentChannelNotifier = None) -> dict:
     """Run full M2-M7 pipeline.
 
     Args:
@@ -114,6 +115,8 @@ def orchestrate(goal: str, tasks_override: dict = None) -> dict:
         }
     """
     logger.info("Starting orchestration", goal=goal)
+    if notifier is None:
+        notifier = AgentChannelNotifier.from_env()
 
     # Initialize workspace
     init_workspace()
@@ -210,6 +213,15 @@ def orchestrate(goal: str, tasks_override: dict = None) -> dict:
 
         for task in batch:
             state_store.update(task["id"], "running")
+            notifier.notify(
+                task.get("assigned_to") or "unassigned",
+                "task_dispatched",
+                {
+                    "run_id": run_id,
+                    "task_id": task["id"],
+                    "title": task.get("title", ""),
+                },
+            )
 
         with ThreadPoolExecutor(max_workers=max_parallel) as pool:
             future_to_task = {pool.submit(execute_task, task): task for task in batch}
@@ -229,10 +241,32 @@ def orchestrate(goal: str, tasks_override: dict = None) -> dict:
                 execution_events.append(result)
                 if result["ok"]:
                     state_store.update(task_id, "completed")
+                    notifier.notify(
+                        task.get("assigned_to") or "unassigned",
+                        "task_completed",
+                        {
+                            "run_id": run_id,
+                            "task_id": task_id,
+                            "title": task.get("title", ""),
+                            "result": result,
+                        },
+                    )
                 else:
                     attempts = state_store.get_attempts(task_id)
                     next_state = scheduler.on_failure(task_id, attempts)
                     state_store.update(task_id, next_state, error=result["error"])
+                    notifier.notify(
+                        task.get("assigned_to") or "unassigned",
+                        "task_failed" if next_state == "failed" else "task_retry",
+                        {
+                            "run_id": run_id,
+                            "task_id": task_id,
+                            "title": task.get("title", ""),
+                            "attempts": attempts,
+                            "error": result["error"],
+                            "next_state": next_state,
+                        },
+                    )
 
     final_state = state_store.snapshot()
     execution = {
