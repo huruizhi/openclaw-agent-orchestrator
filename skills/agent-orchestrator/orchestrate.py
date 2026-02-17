@@ -50,6 +50,51 @@ def _load_agent_limits() -> dict:
         return {"*": int(os.getenv("ORCH_AGENT_DEFAULT_LIMIT", "1"))}
 
 
+def _apply_openclaw_mapping(tasks_dict: dict) -> None:
+    """Apply one-agent OpenClaw execution mapping in-place.
+
+    Minimal mode:
+    - ORCH_OPENCLAW_AGENT_ID: required to enable mapping
+    - ORCH_OPENCLAW_ASSIGNED_TO: logical assignee to map; if empty, map all tasks
+    """
+    agent_id = os.getenv("ORCH_OPENCLAW_AGENT_ID", "").strip()
+    if not agent_id:
+        return
+
+    assigned_to = os.getenv("ORCH_OPENCLAW_ASSIGNED_TO", "").strip()
+    run_timeout = int(os.getenv("OPENCLAW_RUN_TIMEOUT_SECONDS", "600"))
+    poll_interval = float(os.getenv("OPENCLAW_POLL_INTERVAL_SECONDS", "2"))
+
+    matched_tasks = []
+    if assigned_to:
+        matched_tasks = [t for t in tasks_dict["tasks"] if t.get("assigned_to") == assigned_to]
+        if not matched_tasks:
+            logger.warning(
+                "OpenClaw assigned_to filter matched 0 tasks, fallback to all tasks",
+                assigned_filter=assigned_to,
+            )
+    else:
+        matched_tasks = list(tasks_dict["tasks"])
+
+    if not matched_tasks:
+        matched_tasks = list(tasks_dict["tasks"])
+
+    for task in matched_tasks:
+        task["execution"] = {
+            "type": "openclaw",
+            "agent_id": agent_id,
+            "task_prompt": task.get("title", ""),
+            "run_timeout_seconds": run_timeout,
+            "poll_interval_seconds": poll_interval,
+        }
+
+    logger.info(
+        "Applied OpenClaw task mapping",
+        mapped_tasks=len(matched_tasks),
+        assigned_filter=assigned_to or "*",
+    )
+
+
 def orchestrate(goal: str, tasks_override: dict = None) -> dict:
     """Run full M2-M7 pipeline.
 
@@ -110,6 +155,7 @@ def orchestrate(goal: str, tasks_override: dict = None) -> dict:
     logger.info("M5: Assigning agents to tasks")
     m5_assigned = assign_agents(m2_tasks)
     logger.info("M5: Agent assignment completed", task_count=len(m5_assigned["tasks"]))
+    _apply_openclaw_mapping(m5_assigned)
 
     # Save M5 output
     m5_path = run_dir / "m5_assigned.json"

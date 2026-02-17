@@ -45,5 +45,47 @@ def test_orchestrate_with_override():
     print("✓ Orchestrate offline pipeline test passed")
 
 
+def test_orchestrate_openclaw_mapping_minimal():
+    import os
+
+    old_agent_id = os.getenv("ORCH_OPENCLAW_AGENT_ID")
+    old_assigned = os.getenv("ORCH_OPENCLAW_ASSIGNED_TO")
+    os.environ["ORCH_OPENCLAW_AGENT_ID"] = "agent_demo"
+    os.environ["ORCH_OPENCLAW_ASSIGNED_TO"] = "default_agent"
+
+    try:
+        tasks = {
+            "tasks": [
+                {
+                    "id": "tsk_1",
+                    "title": "Task 1",
+                    "description": "",
+                    "status": "pending",
+                    "deps": [],
+                    "inputs": [],
+                    "outputs": [],
+                    "done_when": ["done"],
+                    "assigned_to": "default_agent",
+                }
+            ]
+        }
+        result = orchestrate("mapping test", tasks_override=tasks)
+        mapped_task = result["m5_assigned"]["tasks"][0]
+        assert mapped_task["execution"]["type"] == "openclaw"
+        assert mapped_task["execution"]["agent_id"] == "agent_demo"
+        print("✓ Orchestrate OpenClaw mapping test passed")
+    finally:
+        if old_agent_id is None:
+            os.environ.pop("ORCH_OPENCLAW_AGENT_ID", None)
+        else:
+            os.environ["ORCH_OPENCLAW_AGENT_ID"] = old_agent_id
+
+        if old_assigned is None:
+            os.environ.pop("ORCH_OPENCLAW_ASSIGNED_TO", None)
+        else:
+            os.environ["ORCH_OPENCLAW_ASSIGNED_TO"] = old_assigned
+
+
 if __name__ == "__main__":
     test_orchestrate_with_override()
+    test_orchestrate_openclaw_mapping_minimal()
