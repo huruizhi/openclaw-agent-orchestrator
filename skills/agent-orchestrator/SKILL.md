@@ -123,6 +123,10 @@ Use queue mode to decouple orchestration lifecycle from chat/shell process lifec
 
 ### Default recommended flow (ONCE mode)
 
+Timeout policy (default):
+- Single task/dispatch timeout: `OPENCLAW_AGENT_TIMEOUT_SECONDS=600` (10 minutes)
+- Whole workflow/job timeout: `ORCH_WORKER_JOB_TIMEOUT_SECONDS=2400` (40 minutes)
+
 ```bash
 # 1) Submit job
 python3 scripts/submit.py "<goal>"
