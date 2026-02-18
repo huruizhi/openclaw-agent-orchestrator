@@ -1,6 +1,7 @@
 import os
 import json
 import urllib.request
+from pathlib import Path
 from datetime import datetime
 
 from utils import paths as workspace_paths
@@ -221,8 +222,103 @@ def _persist_waiting_state(run_id: str, project_id: str, waiting: dict, tasks_by
     return str(state_path)
 
 
+def _build_task_status_rows(tasks_by_id: dict, scheduler) -> list[dict]:
+    rows: list[dict] = []
+    done = set(getattr(scheduler, "done", set()))
+    failed = set(getattr(scheduler, "failed", set()))
+    running = set(getattr(scheduler, "running", set()))
+    ready = set(getattr(scheduler, "ready", set()))
+
+    for task_id, task in tasks_by_id.items():
+        if task_id in done:
+            status = "done"
+        elif task_id in failed:
+            status = "failed"
+        elif task_id in running:
+            status = "running"
+        elif task_id in ready:
+            status = "ready"
+        else:
+            status = "pending"
+
+        rows.append(
+            {
+                "task_id": task_id,
+                "title": str(task.get("title", "")),
+                "agent": str(task.get("assigned_to") or ""),
+                "deps": list(task.get("deps", []) or []),
+                "inputs": list(task.get("inputs", []) or []),
+                "outputs": list(task.get("outputs", []) or []),
+                "status": status,
+            }
+        )
+    return rows
+
+
+def _list_artifacts(artifacts_dir: Path) -> list[str]:
+    if not artifacts_dir.exists():
+        return []
+    out: list[str] = []
+    for p in sorted(artifacts_dir.rglob("*")):
+        if p.is_file():
+            out.append(str(p.relative_to(artifacts_dir)))
+    return out
+
+
+def _build_orchestration_report(
+    *,
+    run_id: str,
+    project_id: str,
+    goal: str,
+    result_status: str,
+    tasks_by_id: dict,
+    scheduler,
+    graph: dict,
+    artifacts_dir: Path,
+    started_at: datetime,
+    waiting: dict | None = None,
+    waiting_state_path: str | None = None,
+) -> dict:
+    finished_at = datetime.now()
+    task_rows = _build_task_status_rows(tasks_by_id, scheduler)
+    report = {
+        "run_id": run_id,
+        "project_id": project_id,
+        "goal": goal,
+        "status": result_status,
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+        "duration_seconds": round((finished_at - started_at).total_seconds(), 3),
+        "summary": {
+            "total_tasks": len(task_rows),
+            "done": len(getattr(scheduler, "done", set())),
+            "failed": len(getattr(scheduler, "failed", set())),
+            "running": len(getattr(scheduler, "running", set())),
+            "ready": len(getattr(scheduler, "ready", set())),
+        },
+        "graph": graph,
+        "tasks": task_rows,
+        "artifacts_dir": str(artifacts_dir),
+        "artifacts": _list_artifacts(artifacts_dir),
+    }
+    if waiting is not None:
+        report["waiting"] = waiting
+    if waiting_state_path:
+        report["waiting_state_path"] = waiting_state_path
+    return report
+
+
+def _persist_run_report(run_id: str, report: dict) -> str:
+    path = workspace_paths.RUNS_DIR / f"report_{run_id}.json"
+    workspace_paths.RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    return str(path)
+
+
 def run_workflow(goal: str, base_url: str, api_key: str):
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    started_at = datetime.now()
+    run_id = started_at.strftime("%Y%m%d_%H%M%S")
     project_id = _set_dynamic_project_id(goal, run_id)
     _load_runtime_modules()
     notifier = AsyncAgentNotifier(AgentChannelNotifier.from_env())
@@ -275,12 +371,28 @@ def run_workflow(goal: str, base_url: str, api_key: str):
                         "waiting_state_path": waiting_state_path,
                     },
                 )
+                report = _build_orchestration_report(
+                    run_id=run_id,
+                    project_id=project_id,
+                    goal=goal,
+                    result_status="waiting_human",
+                    tasks_by_id=tasks_by_id,
+                    scheduler=scheduler,
+                    graph=graph,
+                    artifacts_dir=artifacts_dir,
+                    started_at=started_at,
+                    waiting=waiting,
+                    waiting_state_path=waiting_state_path,
+                )
+                report_path = _persist_run_report(run_id, report)
                 return {
                     "status": "waiting_human",
                     "run_id": run_id,
                     "project_id": project_id,
                     "waiting": waiting,
                     "waiting_state_path": waiting_state_path,
+                    "report_path": report_path,
+                    "orchestration": report,
                 }
 
             # Default behavior: fail fast on waiting to avoid infinite loops/spam.
@@ -342,7 +454,27 @@ def run_workflow(goal: str, base_url: str, api_key: str):
                 },
             )
 
-        return result
+        final_status = str(result.get("status") or "finished")
+        report = _build_orchestration_report(
+            run_id=run_id,
+            project_id=project_id,
+            goal=goal,
+            result_status=final_status,
+            tasks_by_id=tasks_by_id,
+            scheduler=scheduler,
+            graph=graph,
+            artifacts_dir=artifacts_dir,
+            started_at=started_at,
+        )
+        report_path = _persist_run_report(run_id, report)
+
+        return {
+            **result,
+            "run_id": run_id,
+            "project_id": project_id,
+            "report_path": report_path,
+            "orchestration": report,
+        }
     except Exception as e:
         notifier.notify(
             "main",
@@ -354,6 +486,22 @@ def run_workflow(goal: str, base_url: str, api_key: str):
                 "message": f"workflow error: {e}",
             },
         )
+        try:
+            report = _build_orchestration_report(
+                run_id=run_id,
+                project_id=project_id,
+                goal=goal,
+                result_status="error",
+                tasks_by_id=tasks_by_id,
+                scheduler=scheduler,
+                graph=graph,
+                artifacts_dir=artifacts_dir,
+                started_at=started_at,
+            )
+            report["error"] = str(e)
+            _persist_run_report(run_id, report)
+        except Exception:
+            pass
         raise
     finally:
         notifier.close(wait=True)

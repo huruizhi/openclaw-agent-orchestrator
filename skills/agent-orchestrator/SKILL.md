@@ -14,10 +14,15 @@ Run one end-to-end workflow from a single goal:
 - Always include:
   - `run_id`
   - `project_id`
-  - `status` (`finished | failed | waiting`)
+  - `status` (`finished | failed | waiting_human | error`)
   - completed/failed counts
   - blocking reason (if any)
   - one concrete next action
+- Return full orchestration payload when requested, including:
+  - graph
+  - per-task status rows
+  - artifacts list
+  - `report_path` (`.orchestrator/runs/report_<run_id>.json`)
 
 ## Preconditions
 
