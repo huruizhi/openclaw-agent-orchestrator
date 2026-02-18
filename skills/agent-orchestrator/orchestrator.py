@@ -193,6 +193,33 @@ def _persist_task_metadata(tasks_dict: dict) -> None:
             json.dump(task, f, ensure_ascii=False, indent=2)
 
 
+def _persist_waiting_state(run_id: str, project_id: str, waiting: dict, tasks_by_id: dict, executor) -> str:
+    state_path = workspace_paths.STATE_DIR / f"waiting_{run_id}.json"
+    payload = {
+        "run_id": run_id,
+        "project_id": project_id,
+        "status": "waiting_human",
+        "created_at": datetime.now().isoformat(),
+        "items": [],
+    }
+    for task_id, question in waiting.items():
+        task = tasks_by_id.get(task_id, {})
+        payload["items"].append(
+            {
+                "task_id": task_id,
+                "title": str(task.get("title", "")),
+                "agent": str(task.get("assigned_to") or ""),
+                "session_id": executor.task_to_session.get(task_id, ""),
+                "question": str(question or "").strip(),
+            }
+        )
+
+    workspace_paths.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(state_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return str(state_path)
+
+
 def run_workflow(goal: str, base_url: str, api_key: str):
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     project_id = _set_dynamic_project_id(goal, run_id)
@@ -226,13 +253,40 @@ def run_workflow(goal: str, base_url: str, api_key: str):
         while result.get("status") == "waiting":
             waiting = result.get("waiting", {})
 
+            # Human mode: pause workflow and persist waiting context for manual resume.
+            if waiting_policy == "human":
+                waiting_state_path = _persist_waiting_state(
+                    run_id=run_id,
+                    project_id=project_id,
+                    waiting=waiting,
+                    tasks_by_id=tasks_by_id,
+                    executor=executor,
+                )
+                notifier.notify(
+                    "main",
+                    "workflow_waiting_human",
+                    {
+                        "run_id": run_id,
+                        "project_id": project_id,
+                        "message": f"workflow waiting for human input: {run_id}",
+                        "waiting_state_path": waiting_state_path,
+                    },
+                )
+                return {
+                    "status": "waiting_human",
+                    "run_id": run_id,
+                    "project_id": project_id,
+                    "waiting": waiting,
+                    "waiting_state_path": waiting_state_path,
+                }
+
             # Default behavior: fail fast on waiting to avoid infinite loops/spam.
             if waiting_policy != "auto":
                 first_task_id = next(iter(waiting.keys()), "")
                 first_question = str(waiting.get(first_task_id, "")).strip() if first_task_id else ""
                 raise RuntimeError(
                     f"Task requires user input (waiting). task={first_task_id} question={first_question or '-'} "
-                    "Set ORCH_WAITING_POLICY=auto to enable LLM auto-resume."
+                    "Set ORCH_WAITING_POLICY=human for manual input pause or ORCH_WAITING_POLICY=auto for LLM auto-resume."
                 )
 
             for task_id, question in waiting.items():
