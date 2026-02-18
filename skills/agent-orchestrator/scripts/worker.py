@@ -16,8 +16,13 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 
-def _run_goal_subprocess(goal: str, audit_gate: bool = True, timeout_seconds: int = 300) -> dict:
-    """Run orchestration in isolated subprocess with hard timeout."""
+def _run_goal_subprocess(
+    goal: str,
+    audit_gate: bool = True,
+    timeout_seconds: int = 300,
+    heartbeat_cb=None,
+) -> dict:
+    """Run orchestration in isolated subprocess with hard timeout + heartbeat callback."""
     env = os.environ.copy()
     env["ORCH_AUDIT_GATE"] = "1" if audit_gate else "0"
     if audit_gate:
@@ -31,21 +36,33 @@ def _run_goal_subprocess(goal: str, audit_gate: bool = True, timeout_seconds: in
         goal,
     ]
 
-    cp = subprocess.run(
+    proc = subprocess.Popen(
         cmd,
         cwd=str(ROOT_DIR),
         env=env,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=max(30, timeout_seconds),
-        check=False,
     )
 
-    if cp.returncode != 0:
-        err = (cp.stderr or cp.stdout or "").strip()
-        raise RuntimeError(err or f"runner failed with code {cp.returncode}")
+    deadline = time.time() + max(30, timeout_seconds)
+    while True:
+        if heartbeat_cb:
+            heartbeat_cb()
+        if time.time() > deadline:
+            proc.kill()
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout_seconds)
+        try:
+            stdout, stderr = proc.communicate(timeout=2)
+            break
+        except subprocess.TimeoutExpired:
+            continue
 
-    lines = (cp.stdout or "").splitlines()
+    if proc.returncode != 0:
+        err = (stderr or stdout or "").strip()
+        raise RuntimeError(err or f"runner failed with code {proc.returncode}")
+
+    lines = (stdout or "").splitlines()
     for line in lines:
         s = line.strip()
         if s.startswith("{") and s.endswith("}"):
@@ -74,7 +91,7 @@ def _process_job(path: Path, timeout_seconds: int) -> None:
     job = read_json(path)
     status = str(job.get("status", "queued"))
 
-    if status in {"cancelled", "completed", "failed", "waiting_human"}:
+    if status in {"cancelled", "completed", "failed", "waiting_human", "running"}:
         return
 
     if status in {"queued", "planning"}:
@@ -82,8 +99,21 @@ def _process_job(path: Path, timeout_seconds: int) -> None:
         job["updated_at"] = utc_now()
         atomic_write_json(path, job)
 
+        def _hb():
+            fresh = read_json(path)
+            if fresh.get("status") in {"cancelled", "failed", "completed"}:
+                return
+            fresh["heartbeat_at"] = utc_now()
+            fresh["updated_at"] = utc_now()
+            atomic_write_json(path, fresh)
+
         try:
-            result = _run_goal_subprocess(job["goal"], audit_gate=True, timeout_seconds=timeout_seconds)
+            result = _run_goal_subprocess(
+                job["goal"],
+                audit_gate=True,
+                timeout_seconds=timeout_seconds,
+                heartbeat_cb=_hb,
+            )
             job["last_result"] = result
             job["status"] = _result_to_job_status(result)
             if result.get("status") == "awaiting_audit":
@@ -99,8 +129,25 @@ def _process_job(path: Path, timeout_seconds: int) -> None:
         return
 
     if status == "approved":
+        job["status"] = "running"
+        job["updated_at"] = utc_now()
+        atomic_write_json(path, job)
+
+        def _hb():
+            fresh = read_json(path)
+            if fresh.get("status") in {"cancelled", "failed", "completed"}:
+                return
+            fresh["heartbeat_at"] = utc_now()
+            fresh["updated_at"] = utc_now()
+            atomic_write_json(path, fresh)
+
         try:
-            result = _run_goal_subprocess(job["goal"], audit_gate=False, timeout_seconds=timeout_seconds)
+            result = _run_goal_subprocess(
+                job["goal"],
+                audit_gate=False,
+                timeout_seconds=timeout_seconds,
+                heartbeat_cb=_hb,
+            )
             job["last_result"] = result
             job["status"] = _result_to_job_status(result)
         except subprocess.TimeoutExpired:
