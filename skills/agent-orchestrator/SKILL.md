@@ -47,6 +47,20 @@ Read `CONFIG.md` for full config details.
 
 ## Preflight (run before first orchestration)
 
+Preferred one-liner:
+
+```bash
+bash scripts/run_preflight.sh
+```
+
+Optional: auto-install dependencies first:
+
+```bash
+INSTALL_DEPS=1 bash scripts/run_preflight.sh
+```
+
+Manual equivalent:
+
 ```bash
 python3 test_imports.py
 python3 m2/test_decompose.py
