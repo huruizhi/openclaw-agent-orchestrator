@@ -122,8 +122,8 @@ The command prints final JSON to stdout, and `run_goal.sh` also persists it to a
 - Persist task/state artifacts under `.orchestrator/` only.
 - Do not mutate task metadata manually during active runs.
 - If run is `waiting`, control behavior with `ORCH_WAITING_POLICY`:
-  - `fail` (default): fail fast, no auto-resume
-  - `human`: pause and persist waiting context to `.orchestrator/state/waiting_<run_id>.json`
+  - `human` (default): pause and persist waiting context to `.orchestrator/state/waiting_<run_id>.json`
+  - `fail`: fail fast, no auto-resume
   - `auto`: LLM auto-resume (bounded by `ORCH_MAX_AUTO_RESUMES`, default `1`)
 - Enforce bounded runtime using timeouts:
   - adapter timeout via `OPENCLAW_AGENT_TIMEOUT_SECONDS`

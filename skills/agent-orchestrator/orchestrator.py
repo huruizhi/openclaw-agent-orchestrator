@@ -246,7 +246,7 @@ def run_workflow(goal: str, base_url: str, api_key: str):
     try:
         result = executor.run(tasks_by_id)
 
-        waiting_policy = os.getenv("ORCH_WAITING_POLICY", "fail").strip().lower()
+        waiting_policy = os.getenv("ORCH_WAITING_POLICY", "human").strip().lower()
         max_auto_resumes = int(os.getenv("ORCH_MAX_AUTO_RESUMES", "1"))
         auto_resume_count: dict[str, int] = {}
 
