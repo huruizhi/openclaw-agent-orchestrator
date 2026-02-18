@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -15,13 +16,45 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 
-def _run_goal(goal: str, audit_gate: bool = True):
-    from orchestrator import run_workflow_from_env
-
-    os.environ["ORCH_AUDIT_GATE"] = "1" if audit_gate else "0"
+def _run_goal_subprocess(goal: str, audit_gate: bool = True, timeout_seconds: int = 300) -> dict:
+    """Run orchestration in isolated subprocess with hard timeout."""
+    env = os.environ.copy()
+    env["ORCH_AUDIT_GATE"] = "1" if audit_gate else "0"
     if audit_gate:
-        os.environ["ORCH_AUDIT_DECISION"] = "pending"
-    return run_workflow_from_env(goal)
+        env["ORCH_AUDIT_DECISION"] = "pending"
+
+    cmd = [
+        sys.executable,
+        "scripts/runner.py",
+        "run",
+        "--no-preflight",
+        goal,
+    ]
+
+    cp = subprocess.run(
+        cmd,
+        cwd=str(ROOT_DIR),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=max(30, timeout_seconds),
+        check=False,
+    )
+
+    if cp.returncode != 0:
+        err = (cp.stderr or cp.stdout or "").strip()
+        raise RuntimeError(err or f"runner failed with code {cp.returncode}")
+
+    lines = (cp.stdout or "").splitlines()
+    for line in lines:
+        s = line.strip()
+        if s.startswith("{") and s.endswith("}"):
+            try:
+                return json.loads(s)
+            except Exception:
+                continue
+
+    raise RuntimeError("runner output missing result JSON")
 
 
 def _result_to_job_status(result: dict) -> str:
@@ -37,7 +70,7 @@ def _result_to_job_status(result: dict) -> str:
     return "completed"
 
 
-def _process_job(path: Path) -> None:
+def _process_job(path: Path, timeout_seconds: int) -> None:
     job = read_json(path)
     status = str(job.get("status", "queued"))
 
@@ -50,11 +83,14 @@ def _process_job(path: Path) -> None:
         atomic_write_json(path, job)
 
         try:
-            result = _run_goal(job["goal"], audit_gate=True)
+            result = _run_goal_subprocess(job["goal"], audit_gate=True, timeout_seconds=timeout_seconds)
             job["last_result"] = result
             job["status"] = _result_to_job_status(result)
             if result.get("status") == "awaiting_audit":
                 job["audit"]["run_id"] = result.get("run_id")
+        except subprocess.TimeoutExpired:
+            job["status"] = "failed"
+            job["error"] = f"job timeout after {timeout_seconds}s"
         except Exception as e:
             job["status"] = "failed"
             job["error"] = str(e)
@@ -64,9 +100,12 @@ def _process_job(path: Path) -> None:
 
     if status == "approved":
         try:
-            result = _run_goal(job["goal"], audit_gate=False)
+            result = _run_goal_subprocess(job["goal"], audit_gate=False, timeout_seconds=timeout_seconds)
             job["last_result"] = result
             job["status"] = _result_to_job_status(result)
+        except subprocess.TimeoutExpired:
+            job["status"] = "failed"
+            job["error"] = f"job timeout after {timeout_seconds}s"
         except Exception as e:
             job["status"] = "failed"
             job["error"] = str(e)
@@ -91,6 +130,7 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Background worker for orchestrator queue")
     p.add_argument("--once", action="store_true", help="process one pass and exit")
     p.add_argument("--interval", type=float, default=2.0, help="poll interval seconds")
+    p.add_argument("--job-timeout", type=int, default=int(os.getenv("ORCH_WORKER_JOB_TIMEOUT_SECONDS", "300")), help="per-job hard timeout seconds")
     args = p.parse_args()
 
     load_env()
@@ -99,7 +139,7 @@ def main() -> int:
         files = sorted(jobs_dir().glob("*.json"), key=lambda x: x.stat().st_mtime)
         for f in files:
             try:
-                _process_job(f)
+                _process_job(f, timeout_seconds=max(30, int(args.job_timeout)))
             except Exception:
                 pass
 
