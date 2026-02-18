@@ -89,6 +89,20 @@ Preferred production entrypoint (includes env checks, optional preflight, result
 bash scripts/run_goal.sh "<goal>"
 ```
 
+Audit gate (default ON):
+- First run returns `awaiting_audit` plan, no task execution.
+- Approve to execute:
+
+```bash
+bash scripts/audit_run.sh approve <run_id>
+```
+
+- Revise plan (2A: re-plan only, no execution):
+
+```bash
+bash scripts/audit_run.sh revise <run_id> "<revision feedback>"
+```
+
 Useful modes:
 
 ```bash

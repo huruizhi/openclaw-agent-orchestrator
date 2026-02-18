@@ -316,6 +316,23 @@ def _persist_run_report(run_id: str, report: dict) -> str:
     return str(path)
 
 
+def _persist_audit_state(run_id: str, project_id: str, goal: str, tasks_dict: dict, graph: dict) -> str:
+    path = workspace_paths.STATE_DIR / f"audit_{run_id}.json"
+    workspace_paths.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "run_id": run_id,
+        "project_id": project_id,
+        "goal": goal,
+        "status": "pending",
+        "created_at": datetime.now().isoformat(),
+        "tasks": tasks_dict.get("tasks", []),
+        "graph": graph,
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return str(path)
+
+
 def run_workflow(goal: str, base_url: str, api_key: str):
     started_at = datetime.now()
     run_id = started_at.strftime("%Y%m%d_%H%M%S")
@@ -333,11 +350,49 @@ def run_workflow(goal: str, base_url: str, api_key: str):
     tasks_by_id = {t["id"]: t for t in tasks_dict["tasks"]}
 
     scheduler = Scheduler(graph, in_degree, tasks_by_id)
+    artifacts_dir = workspace_paths.PROJECT_DIR / "artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    # Audit gate: default enabled. Require explicit approval before execution.
+    audit_gate = os.getenv("ORCH_AUDIT_GATE", "1").strip().lower() not in {"0", "false", "no", "off"}
+    audit_decision = os.getenv("ORCH_AUDIT_DECISION", "pending").strip().lower()
+    if audit_gate and audit_decision != "approve":
+        audit_state_path = _persist_audit_state(run_id, project_id, goal, tasks_dict, graph)
+        report = _build_orchestration_report(
+            run_id=run_id,
+            project_id=project_id,
+            goal=goal,
+            result_status="awaiting_audit",
+            tasks_by_id=tasks_by_id,
+            scheduler=scheduler,
+            graph=graph,
+            artifacts_dir=artifacts_dir,
+            started_at=started_at,
+        )
+        report_path = _persist_run_report(run_id, report)
+        notifier.notify(
+            "main",
+            "workflow_awaiting_audit",
+            {
+                "run_id": run_id,
+                "project_id": project_id,
+                "message": f"workflow awaiting audit: {run_id}",
+                "audit_state_path": audit_state_path,
+                "report_path": report_path,
+            },
+        )
+        return {
+            "status": "awaiting_audit",
+            "run_id": run_id,
+            "project_id": project_id,
+            "audit_state_path": audit_state_path,
+            "report_path": report_path,
+            "orchestration": report,
+        }
+
     adapter_timeout_seconds = int(os.getenv("OPENCLAW_AGENT_TIMEOUT_SECONDS", "600"))
     adapter = OpenClawSessionAdapter(base_url, api_key, timeout_seconds=adapter_timeout_seconds)
     watcher = SessionWatcher(adapter)
-    artifacts_dir = workspace_paths.PROJECT_DIR / "artifacts"
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
     executor = Executor(scheduler, adapter, watcher, artifacts_dir=str(artifacts_dir))
     executor.notifier = notifier
     executor.run_id = run_id
