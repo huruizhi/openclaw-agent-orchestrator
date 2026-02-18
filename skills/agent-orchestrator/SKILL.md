@@ -1,36 +1,64 @@
 ---
 name: agent-orchestrator
-description: Decompose a complex goal into dependency-aware tasks, assign tasks to available OpenClaw agents, schedule execution, and monitor until completion with retry/failure handling and summary output. Use when a user asks for multi-agent orchestration, task decomposition, agent routing, parallel/ordered execution, workflow monitoring, or coordinated delivery across agents (main/work/enjoy/techwriter/lab/code/test/image).
+description: Decompose a complex goal into dependency-aware tasks, assign tasks to available OpenClaw agents, schedule execution, and monitor until completion with retry/failure handling and summary output. Use when users ask for multi-agent orchestration, task decomposition, agent routing, parallel/ordered execution, workflow monitoring, cross-agent delivery, or automated run summaries.
 ---
 
 # Agent Orchestrator
 
-Run a full workflow from one goal: decompose → assign → graph/schedule → execute via OpenClaw sessions → monitor → summarize.
+Run one end-to-end workflow from a single goal:
+`decompose -> assign -> graph/schedule -> execute via OpenClaw sessions -> monitor -> summarize`.
 
-## Use this skill output style
+## Output Contract (user-facing)
 
-- Return concise progress + final summary.
-- Include: run id, project id, completed tasks, failed tasks, blocking reason (if any), and next action.
-- Keep operational logs in files; keep chat output short.
+- Keep updates concise.
+- Always include:
+  - `run_id`
+  - `project_id`
+  - `status` (`finished | failed | waiting`)
+  - completed/failed counts
+  - blocking reason (if any)
+  - one concrete next action
 
 ## Preconditions
 
-1. Ensure dependencies are installed:
-   - `python3 -m pip install -r requirements.txt`
-2. Ensure `.env` exists (copy from `.env.example` if needed).
-3. Ensure OpenClaw API vars are set when executing tasks through sessions:
-   - `OPENCLAW_API_BASE_URL`
-   - `OPENCLAW_API_KEY` (if required by gateway)
-4. Ensure LLM vars are set for decomposition and waiting-question auto-answer:
-   - `LLM_URL`
-   - `LLM_API_KEY`
-   - `LLM_MODEL` (optional)
+1. Install dependencies:
 
-Read `CONFIG.md` for full env/config details.
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+2. Ensure `.env` exists:
+
+```bash
+cp .env.example .env
+```
+
+3. Configure required runtime variables:
+
+- OpenClaw session execution:
+  - `OPENCLAW_API_BASE_URL`
+  - `OPENCLAW_API_KEY` (if gateway requires auth)
+- LLM decomposition + waiting-answer:
+  - `LLM_URL`
+  - `LLM_API_KEY`
+  - `LLM_MODEL` (optional)
+
+Read `CONFIG.md` for full config details.
+
+## Preflight (run before first orchestration)
+
+```bash
+python3 test_imports.py
+python3 m2/test_decompose.py
+python3 m6/test_scheduler.py
+python3 m7/test_executor.py
+```
+
+If any check fails, stop and fix before running production goals.
 
 ## Run
 
-Preferred entrypoint:
+Preferred:
 
 ```bash
 python3 main.py "<goal>"
@@ -42,51 +70,73 @@ Equivalent:
 python3 main.py --goal "<goal>"
 ```
 
-The command prints final JSON result to stdout.
+The command prints final JSON to stdout.
 
-## What the pipeline does
+## Pipeline Stages
 
-1. Decompose goal into tasks (`m2`).
-2. Build execution graph / dependencies (`m3`).
-3. Assign task owners by capability (`m5/agents.json`).
-4. Schedule ready tasks (`m6`).
+1. Decompose goal into task list (`m2`).
+2. Build dependency graph (`m3`).
+3. Assign task owners (`m5/agents.json`).
+4. Schedule runnable tasks (`m6`).
 5. Spawn and drive agent sessions (`m7`).
-6. Watch statuses and collect outputs.
-7. Retry failed tasks according to executor logic.
-8. Emit notifier events per agent/channel (via `utils/notifier.py`).
+6. Watch state transitions + collect outputs.
+7. Apply retry policy in executor.
+8. Emit channel notifications (`utils/notifier.py`).
 
-## Operational rules
+## Production Rules
 
 - Fail fast on missing critical env values.
-- Preserve task metadata/state under workspace `.orchestrator` directories.
-- Avoid manual task mutation during an active run unless performing explicit repair.
-- If run enters waiting state, allow LLM-assisted resume flow; if unavailable, stop and report missing inputs clearly.
+- Persist task/state artifacts under `.orchestrator/` only.
+- Do not mutate task metadata manually during active runs.
+- If run is `waiting`:
+  - first try LLM-assisted answer path,
+  - if unavailable/empty, stop and report exact missing input.
+- Enforce bounded runtime using timeouts:
+  - adapter timeout via `OPENCLAW_AGENT_TIMEOUT_SECONDS`
+  - LLM timeout via `LLM_TIMEOUT`
 
-## Troubleshooting checklist
+## Retry / Failure Policy
 
-1. Import/dependency issue: run `python3 test_imports.py`.
-2. Decomposition format issue: run `python3 m2/test_decompose.py`.
-3. Scheduler behavior issue: run `python3 m6/test_scheduler.py`.
-4. Session execution issue: run `python3 m7/test_executor.py`.
-5. End-to-end regression: run `python3 test_orchestrate_pipeline.py`.
+- Retry only transient failures (network timeout, temporary API errors, rate limits).
+- Do not blind-retry deterministic failures (schema mismatch, missing required input, invalid config).
+- On terminal failure, return:
+  - failed task id/title
+  - root cause summary
+  - whether retry is safe
+  - recommended fix command/action
 
-## References to load on demand
+## Notification Policy
 
-- `CONFIG.md`: environment and directory layout.
-- `INSTALL.md`: dependency installation.
-- `QUICKSTART.md`: quick commands and examples.
-- `schemas/task.schema.json`: task contract.
-- `m5/agents.json`: available agents and capabilities.
-- `utils/PATHS.md`: workspace/state path semantics.
+- Use notifier for task lifecycle events only.
+- Keep notification payload short and actionable.
+- Prefer agent-bound channels from `openclaw.json` bindings.
+- If channel mapping is missing, log warning and continue run (do not crash workflow).
 
-## Minimal final report template
+## Troubleshooting
 
-Use this structure in user-facing responses:
+- Dependency/import: `python3 test_imports.py`
+- Decomposition quality/schema: `python3 m2/test_decompose.py`
+- Scheduler behavior: `python3 m6/test_scheduler.py`
+- Session execution: `python3 m7/test_executor.py`
+- End-to-end regression: `python3 test_orchestrate_pipeline.py`
+
+## References (load on demand)
+
+- `CONFIG.md` - environment and directory layout
+- `INSTALL.md` - dependency install and setup
+- `QUICKSTART.md` - quick usage examples
+- `schemas/task.schema.json` - task contract
+- `m5/agents.json` - available agents and capabilities
+- `utils/PATHS.md` - workspace/state path semantics
+- `utils/LOGGING.md` - logging conventions
+
+## Final Report Template
 
 - Goal: `<goal>`
 - Run: `<run_id>` / Project: `<project_id>`
-- Status: `finished | failed | waiting`
+- Status: `<finished|failed|waiting>`
 - Completed: `<n>`
 - Failed: `<n>`
-- Key outputs: `<artifacts or key messages>`
-- Next action: `<one concrete next step>`
+- Blockers: `<none|summary>`
+- Key outputs: `<artifacts/messages>`
+- Next action: `<single concrete action>`
