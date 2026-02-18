@@ -90,7 +90,16 @@ else
 fi
 
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
-DEFAULT_OUTPUT="workspace/default_project/.orchestrator/runs/latest-${RUN_ID}.json"
+BASE_PATH_VAL="${BASE_PATH:-./workspace}"
+PROJECT_ID_VAL="${PROJECT_ID:-default_project}"
+
+if [[ "$BASE_PATH_VAL" = /* ]]; then
+  RESOLVED_BASE_PATH="$BASE_PATH_VAL"
+else
+  RESOLVED_BASE_PATH="$ROOT_DIR/$BASE_PATH_VAL"
+fi
+
+DEFAULT_OUTPUT="$RESOLVED_BASE_PATH/$PROJECT_ID_VAL/.orchestrator/runs/latest-${RUN_ID}.json"
 RESULT_PATH="${OUTPUT_FILE:-$DEFAULT_OUTPUT}"
 mkdir -p "$(dirname "$RESULT_PATH")"
 
