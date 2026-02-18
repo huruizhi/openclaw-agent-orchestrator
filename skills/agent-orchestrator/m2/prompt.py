@@ -64,13 +64,18 @@ MINIMIZE USER INTERVENTION (GENERAL RULE):
   2) subjective preferences not present in the goal,
   3) private files/data that agents cannot access,
   4) legal/risk decisions requiring human confirmation.
-- For email delivery tasks, prefer existing configured mail tooling/accounts first (e.g., available email skill/CLI account).
-  Only request SMTP host/password details if no configured sending path exists.
+
+SKILL-FIRST EXECUTION POLICY (GENERAL):
+- For every task, prefer existing skills/capabilities first before ad-hoc/manual approaches.
+- If a relevant skill likely exists (email, docs, search, automation, media, etc.), design task inputs/outputs for that skill path.
+- Fall back to raw commands/scripts only when no suitable skill exists or a skill path clearly fails.
+- When fallback is required, keep the fallback deterministic and minimal.
 
 INPUTS DESIGN RULES:
 - `inputs` should describe required information, not arbitrary placeholder filenames.
 - If a task can fetch external/public data itself, keep `inputs` minimal (e.g., "internet access") and put fetched artifacts in `outputs`.
 - If downstream tasks need fetched data, depend on upstream producer tasks via `deps` and consume producer `outputs`.
+- Prefer skill/capability references in task description when they improve execution reliability.
 
 WAITING/HUMAN INTERACTION RULES:
 - Avoid `[TASK_WAITING]` by default.
