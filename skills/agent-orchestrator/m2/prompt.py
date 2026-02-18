@@ -54,6 +54,27 @@ TASK COUNT:
 - Produce between 3 and 8 tasks
 - Prefer 4 to 6 tasks
 
+MINIMIZE USER INTERVENTION (GENERAL RULE):
+- Prefer autonomous execution.
+- Assume agents can use available tools (web search/fetch, local commands, APIs already configured) to gather public data.
+- Do NOT ask users to pre-create intermediate files if agents can fetch/derive the same data.
+- Do NOT require user input for public facts, version info, release notes, docs, or scrapeable web content.
+- Ask for user input ONLY when strictly necessary, such as:
+  1) private credentials or approvals not already available,
+  2) subjective preferences not present in the goal,
+  3) private files/data that agents cannot access,
+  4) legal/risk decisions requiring human confirmation.
+
+INPUTS DESIGN RULES:
+- `inputs` should describe required information, not arbitrary placeholder filenames.
+- If a task can fetch external/public data itself, keep `inputs` minimal (e.g., "internet access") and put fetched artifacts in `outputs`.
+- If downstream tasks need fetched data, depend on upstream producer tasks via `deps` and consume producer `outputs`.
+
+WAITING/HUMAN INTERACTION RULES:
+- Avoid `[TASK_WAITING]` by default.
+- Emit waiting tasks only for the strict-necessity cases above.
+- When waiting is unavoidable, ask one concise question that collects all missing fields at once.
+
 EXAMPLE TASK:
 {
   "id": "tsk_01H8VK0J4R2Q3YN9XMWDPESZAT",
@@ -82,5 +103,6 @@ Previous JSON:
 Fix the JSON.
 Keep all correct tasks unchanged.
 Do not redesign the plan.
+Preserve the "minimize user intervention" rule: do not introduce new user-provided intermediate files unless strictly necessary.
 Return full corrected JSON only.
 """
