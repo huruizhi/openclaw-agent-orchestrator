@@ -59,6 +59,12 @@ Optional: auto-install dependencies first:
 INSTALL_DEPS=1 bash scripts/run_preflight.sh
 ```
 
+Optional: skip slow integration test for quick checks:
+
+```bash
+SKIP_INTEGRATION=1 bash scripts/run_preflight.sh
+```
+
 Manual equivalent:
 
 ```bash
@@ -72,13 +78,13 @@ If any check fails, stop and fix before running production goals.
 
 ## Run
 
-Preferred:
+Preferred production entrypoint (includes env checks, optional preflight):
 
 ```bash
-python3 main.py "<goal>"
+bash scripts/run_goal.sh "<goal>"
 ```
 
-Equivalent:
+Direct entrypoint:
 
 ```bash
 python3 main.py --goal "<goal>"
