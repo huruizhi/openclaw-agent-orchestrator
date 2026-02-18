@@ -1,130 +1,133 @@
-"""Offline end-to-end test for orchestrate pipeline (M2-M7)."""
+"""Compatibility tests for orchestrator entrypoint."""
 
 from pathlib import Path
+import os
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from orchestrate import orchestrate
+import orchestrator as orch_mod
 
 
-class DummyNotifier:
-    def __init__(self):
-        self.events = []
+def test_run_workflow_entrypoint():
+    old_decompose = orch_mod.decompose
+    old_assign = orch_mod.assign_agents
+    old_build = orch_mod.build_execution_graph
+    old_scheduler = orch_mod.Scheduler
+    old_adapter = orch_mod.OpenClawSessionAdapter
+    old_watcher = orch_mod.SessionWatcher
+    old_executor = orch_mod.Executor
+    old_notifier = orch_mod.AgentChannelNotifier.from_env
+    old_async = orch_mod.AsyncAgentNotifier
+    old_base = os.getenv("OPENCLAW_API_BASE_URL")
+    old_key = os.getenv("OPENCLAW_API_KEY")
 
-    def notify(self, agent, event, payload):
-        self.events.append({"agent": agent, "event": event, "payload": payload})
-        return True
+    class DummyNotifier:
+        def notify(self, agent, event, payload):
+            return True
 
+    class DummyAsyncNotifier:
+        def __init__(self, notifier):
+            self.notifier = notifier
 
-def test_orchestrate_with_override():
-    import os
+        def notify(self, agent, event, payload):
+            return self.notifier.notify(agent, event, payload)
 
-    old_agent_id = os.getenv("ORCH_OPENCLAW_AGENT_ID")
-    old_assigned = os.getenv("ORCH_OPENCLAW_ASSIGNED_TO")
+        def close(self, wait=True):
+            return None
 
-    os.environ.pop("ORCH_OPENCLAW_AGENT_ID", None)
-    os.environ.pop("ORCH_OPENCLAW_ASSIGNED_TO", None)
+    class DummyScheduler:
+        def __init__(self, graph, in_degree, tasks_by_id):
+            self.graph = graph
+            self.in_degree = in_degree
+            self.tasks_by_id = tasks_by_id
 
-    tasks = {
-        "tasks": [
-            {
-                "id": "tsk_a",
-                "title": "Prepare inputs",
-                "description": "",
-                "status": "pending",
-                "deps": [],
-                "inputs": [],
-                "outputs": ["inputs.json"],
-                "done_when": ["inputs.json exists"],
-                "assigned_to": None,
-            },
-            {
-                "id": "tsk_b",
-                "title": "Fail execution intentionally",
-                "description": "",
-                "status": "pending",
-                "deps": ["tsk_a"],
-                "inputs": ["inputs.json"],
-                "outputs": ["result.json"],
-                "done_when": ["result exists"],
-                "assigned_to": None,
-            },
-        ]
-    }
+    class DummyAdapter:
+        def __init__(self, base_url, api_key):
+            self.base_url = base_url
+            self.api_key = api_key
 
-    try:
-        notifier = DummyNotifier()
-        result = orchestrate("offline test goal", tasks_override=tasks, notifier=notifier)
-        states = result["execution"]["state"]["tasks"]
+    class DummyWatcher:
+        def __init__(self, adapter):
+            self.adapter = adapter
 
-        assert states["tsk_a"]["status"] == "completed"
-        assert states["tsk_b"]["status"] == "failed"
-        assert states["tsk_b"]["attempts"] >= 1
-        events = [e["event"] for e in notifier.events]
-        assert "task_dispatched" in events
-        assert "task_completed" in events
-        assert ("task_failed" in events) or ("task_retry" in events)
-        print("✓ Orchestrate offline pipeline test passed")
-    finally:
-        if old_agent_id is None:
-            os.environ.pop("ORCH_OPENCLAW_AGENT_ID", None)
-        else:
-            os.environ["ORCH_OPENCLAW_AGENT_ID"] = old_agent_id
-        if old_assigned is None:
-            os.environ.pop("ORCH_OPENCLAW_ASSIGNED_TO", None)
-        else:
-            os.environ["ORCH_OPENCLAW_ASSIGNED_TO"] = old_assigned
+    called = {"run_called": 0}
 
+    class DummyExecutor:
+        def __init__(self, scheduler, adapter, watcher):
+            self.scheduler = scheduler
+            self.adapter = adapter
+            self.watcher = watcher
+            self.task_to_session = {}
+            self.waiting_tasks = {}
+            self.notifier = None
+            self.run_id = ""
 
-def test_orchestrate_openclaw_mapping_minimal():
-    import os
+        def run(self, tasks_by_id):
+            called["run_called"] += 1
+            return {"status": "finished", "waiting": {}}
 
-    old_agent_id = os.getenv("ORCH_OPENCLAW_AGENT_ID")
-    old_assigned = os.getenv("ORCH_OPENCLAW_ASSIGNED_TO")
-    old_openclaw_base = os.getenv("OPENCLAW_API_BASE_URL")
-    os.environ["ORCH_OPENCLAW_AGENT_ID"] = "agent_demo"
-    os.environ["ORCH_OPENCLAW_ASSIGNED_TO"] = "default_agent"
-    os.environ["OPENCLAW_API_BASE_URL"] = "http://127.0.0.1:18789"
-
-    try:
-        tasks = {
+    def fake_decompose(goal):
+        called["goal"] = goal
+        return {
             "tasks": [
                 {
-                    "id": "tsk_1",
-                    "title": "Task 1",
+                    "id": "t1",
+                    "title": "demo",
                     "description": "",
                     "status": "pending",
                     "deps": [],
                     "inputs": [],
                     "outputs": [],
-                    "done_when": ["done"],
-                    "assigned_to": "default_agent",
+                    "done_when": [],
+                    "assigned_to": "main",
                 }
             ]
         }
-        result = orchestrate("mapping test", tasks_override=tasks)
-        mapped_task = result["m5_assigned"]["tasks"][0]
-        assert mapped_task["execution"]["type"] == "openclaw"
-        assert mapped_task["execution"]["agent_id"] == "agent_demo"
-        print("✓ Orchestrate OpenClaw mapping test passed")
+
+    def fake_assign(tasks_dict):
+        return tasks_dict
+
+    def fake_build_graph(tasks_dict):
+        return {"graph": {"t1": []}, "in_degree": {"t1": 0}}
+
+    try:
+        orch_mod.decompose = fake_decompose
+        orch_mod.assign_agents = fake_assign
+        orch_mod.build_execution_graph = fake_build_graph
+        orch_mod.Scheduler = DummyScheduler
+        orch_mod.OpenClawSessionAdapter = DummyAdapter
+        orch_mod.SessionWatcher = DummyWatcher
+        orch_mod.Executor = DummyExecutor
+        orch_mod.AgentChannelNotifier.from_env = staticmethod(lambda: DummyNotifier())
+        orch_mod.AsyncAgentNotifier = DummyAsyncNotifier
+        os.environ["OPENCLAW_API_BASE_URL"] = "http://127.0.0.1:18789"
+        os.environ["OPENCLAW_API_KEY"] = "k"
+
+        result = orch_mod.run_workflow("demo goal", "http://127.0.0.1:18789", "k")
+        assert result["status"] == "finished"
+        assert called["goal"] == "demo goal"
+        assert called["run_called"] == 1
+        print("✓ orchestrator entrypoint test passed")
     finally:
-        if old_agent_id is None:
-            os.environ.pop("ORCH_OPENCLAW_AGENT_ID", None)
-        else:
-            os.environ["ORCH_OPENCLAW_AGENT_ID"] = old_agent_id
-
-        if old_assigned is None:
-            os.environ.pop("ORCH_OPENCLAW_ASSIGNED_TO", None)
-        else:
-            os.environ["ORCH_OPENCLAW_ASSIGNED_TO"] = old_assigned
-
-        if old_openclaw_base is None:
+        orch_mod.decompose = old_decompose
+        orch_mod.assign_agents = old_assign
+        orch_mod.build_execution_graph = old_build
+        orch_mod.Scheduler = old_scheduler
+        orch_mod.OpenClawSessionAdapter = old_adapter
+        orch_mod.SessionWatcher = old_watcher
+        orch_mod.Executor = old_executor
+        orch_mod.AgentChannelNotifier.from_env = old_notifier
+        orch_mod.AsyncAgentNotifier = old_async
+        if old_base is None:
             os.environ.pop("OPENCLAW_API_BASE_URL", None)
         else:
-            os.environ["OPENCLAW_API_BASE_URL"] = old_openclaw_base
+            os.environ["OPENCLAW_API_BASE_URL"] = old_base
+        if old_key is None:
+            os.environ.pop("OPENCLAW_API_KEY", None)
+        else:
+            os.environ["OPENCLAW_API_KEY"] = old_key
 
 
 if __name__ == "__main__":
-    test_orchestrate_with_override()
-    test_orchestrate_openclaw_mapping_minimal()
+    test_run_workflow_entrypoint()
