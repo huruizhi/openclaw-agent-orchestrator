@@ -24,11 +24,24 @@ def _run_goal(goal: str, audit_gate: bool = True):
     return run_workflow_from_env(goal)
 
 
+def _result_to_job_status(result: dict) -> str:
+    s = str(result.get("status", "")).strip().lower()
+    if s in {"finished", "completed"}:
+        return "completed"
+    if s == "awaiting_audit":
+        return "awaiting_audit"
+    if s == "waiting_human":
+        return "waiting_human"
+    if s in {"error", "failed"}:
+        return "failed"
+    return "completed"
+
+
 def _process_job(path: Path) -> None:
     job = read_json(path)
     status = str(job.get("status", "queued"))
 
-    if status in {"cancelled", "completed", "failed"}:
+    if status in {"cancelled", "completed", "failed", "waiting_human"}:
         return
 
     if status in {"queued", "planning"}:
@@ -39,11 +52,9 @@ def _process_job(path: Path) -> None:
         try:
             result = _run_goal(job["goal"], audit_gate=True)
             job["last_result"] = result
+            job["status"] = _result_to_job_status(result)
             if result.get("status") == "awaiting_audit":
-                job["status"] = "awaiting_audit"
                 job["audit"]["run_id"] = result.get("run_id")
-            else:
-                job["status"] = "completed"
         except Exception as e:
             job["status"] = "failed"
             job["error"] = str(e)
@@ -55,7 +66,7 @@ def _process_job(path: Path) -> None:
         try:
             result = _run_goal(job["goal"], audit_gate=False)
             job["last_result"] = result
-            job["status"] = "completed"
+            job["status"] = _result_to_job_status(result)
         except Exception as e:
             job["status"] = "failed"
             job["error"] = str(e)
