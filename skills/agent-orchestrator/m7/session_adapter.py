@@ -1,79 +1,104 @@
 import json
-import urllib.parse
-import urllib.request
+import os
+import subprocess
+import uuid
 from typing import Any
 
 
 class OpenClawSessionAdapter:
-    def __init__(self, base_url: str, api_key: str, poll_interval: float = 1.0, timeout_seconds: int = 30):
+    def __init__(self, base_url: str, api_key: str, poll_interval: float = 1.0, timeout_seconds: int = 120):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.poll_interval = poll_interval
-        self.timeout_seconds = timeout_seconds
+        # Keep task dispatch bounded; can override via env OPENCLAW_AGENT_TIMEOUT_SECONDS.
+        env_timeout = int(os.getenv("OPENCLAW_AGENT_TIMEOUT_SECONDS", str(timeout_seconds)))
+        self.timeout_seconds = max(10, env_timeout)
         self._last_message_id: dict[str, str] = {}
         self._busy_sessions: set[str] = set()
-
-    def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-
-    def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        req = urllib.request.Request(
-            url=f"{self.base_url}{path}",
-            data=json.dumps(payload).encode("utf-8"),
-            headers=self._headers(),
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-
-    def _get(self, path: str, query: dict[str, str] | None = None) -> dict[str, Any]:
-        url = f"{self.base_url}{path}"
-        if query:
-            url = f"{url}?{urllib.parse.urlencode(query)}"
-        req = urllib.request.Request(url=url, headers=self._headers(), method="GET")
-        with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        self._session_agent: dict[str, str] = {}
+        self._session_buffers: dict[str, list[dict[str, Any]]] = {}
 
     def ensure_session(self, agent_name: str) -> str:
-        data = self._post("/sessions", {"agent": agent_name})
-        session_id = str(data["session_id"])
+        session_id = str(uuid.uuid4())
+        self._session_agent[session_id] = agent_name
+        self._session_buffers.setdefault(session_id, [])
+        self._last_message_id.setdefault(session_id, "")
         return session_id
 
+    def _run_agent_send(self, session_id: str, agent_name: str, text: str) -> dict[str, Any]:
+        cmd = [
+            "openclaw",
+            "agent",
+            "--agent",
+            agent_name,
+            "--session-id",
+            session_id,
+            "--message",
+            text,
+            "--json",
+        ]
+        try:
+            cp = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=self.timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise RuntimeError(
+                f"openclaw agent send timeout after {self.timeout_seconds}s (agent={agent_name}, session={session_id})"
+            ) from e
+
+        if cp.returncode != 0:
+            raise RuntimeError(cp.stderr.strip() or cp.stdout.strip() or "openclaw agent send failed")
+
+        out = (cp.stdout or "").strip()
+        if not out:
+            return {}
+        try:
+            return json.loads(out)
+        except json.JSONDecodeError as e:
+            short = out[:300].replace("\n", " ")
+            raise RuntimeError(f"invalid openclaw agent json output: {short}") from e
+
     def send_message(self, session_id: str, text: str) -> str:
-        data = self._post(
-            f"/sessions/{session_id}/reply",
-            {
-                "role": "user",
-                "content": text,
-            },
-        )
-        message_id = str(data.get("message_id") or data.get("id") or "")
-        return message_id
+        agent_name = self._session_agent.get(session_id, "")
+        if not agent_name:
+            raise RuntimeError(f"Unknown session: {session_id}")
+
+        data = self._run_agent_send(session_id, agent_name, text)
+
+        run_id = str(data.get("runId") or "")
+        result = data.get("result", {}) if isinstance(data, dict) else {}
+        payloads = result.get("payloads", []) if isinstance(result, dict) else []
+
+        assistant_texts: list[str] = []
+        if isinstance(payloads, list):
+            for item in payloads:
+                if not isinstance(item, dict):
+                    continue
+                text_part = item.get("text")
+                if isinstance(text_part, str) and text_part.strip():
+                    assistant_texts.append(text_part)
+
+        if assistant_texts:
+            content = "\n".join(assistant_texts)
+            message_id = run_id or str(uuid.uuid4())
+            self._session_buffers.setdefault(session_id, []).append(
+                {"id": message_id, "role": "assistant", "content": content}
+            )
+            self._last_message_id[session_id] = message_id
+            return message_id
+
+        return run_id
 
     def poll_messages(self, session_id: str) -> list[dict[str, Any]]:
-        if session_id not in self._last_message_id:
-            self._last_message_id[session_id] = ""
-
-        last_id = self._last_message_id.get(session_id, "")
-        query = {"after": last_id} if last_id else None
-        data = self._get(f"/sessions/{session_id}/messages", query=query)
-
-        messages = data.get("messages", [])
-        if not isinstance(messages, list):
-            messages = []
-
-        assistant_messages: list[dict[str, Any]] = []
-        for message in messages:
-            if isinstance(message, dict):
-                msg_id = message.get("message_id") or message.get("id")
-                if msg_id:
-                    self._last_message_id[session_id] = str(msg_id)
-                if message.get("role") == "assistant":
-                    assistant_messages.append(message)
-        return assistant_messages
+        messages = self._session_buffers.get(session_id, [])
+        if not messages:
+            return []
+        self._session_buffers[session_id] = []
+        return messages
 
     def is_session_idle(self, session_id: str) -> bool:
         return session_id not in self._busy_sessions

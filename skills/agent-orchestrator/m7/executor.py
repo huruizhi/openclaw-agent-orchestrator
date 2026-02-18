@@ -104,6 +104,7 @@ class Executor:
         last_progress_at = time.monotonic()
 
         while not self.scheduler.is_finished():
+            progressed = False
             runnable = self.scheduler.get_runnable_tasks()
             for agent, task_id in runnable:
                 session = self.adapter.ensure_session(agent)
@@ -112,7 +113,22 @@ class Executor:
                     self.adapter.mark_session_busy(session)
 
                     prompt = self._build_task_prompt(tasks_by_id[task_id])
-                    self.adapter.send_message(session, prompt)
+                    try:
+                        self.adapter.send_message(session, prompt)
+                    except Exception as e:
+                        # Dispatch failure should fail the task fast (no global hang).
+                        self.adapter.mark_session_idle(session)
+                        self.scheduler.start_task(task_id)
+                        self.scheduler.finish_task(task_id, False)
+                        self._notify(
+                            tasks_by_id,
+                            task_id,
+                            "task_failed",
+                            error=f"dispatch failed: {e}",
+                        )
+                        progressed = True
+                        last_progress_at = time.monotonic()
+                        continue
 
                     self.scheduler.start_task(task_id)
                     self._notify(tasks_by_id, task_id, "task_dispatched")
@@ -124,7 +140,6 @@ class Executor:
                     last_progress_at = time.monotonic()
 
             events = self.watcher.poll_events()
-            progressed = False
 
             for event in events:
                 session = event["session_id"]
