@@ -16,6 +16,80 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 
+def _notify_main(event: str, job: dict) -> None:
+    channel_id = os.getenv("ORCH_MAIN_CHANNEL_ID", "").strip()
+    if not channel_id:
+        return
+
+    icon_map = {
+        "awaiting_audit": "🧭",
+        "running": "▶️",
+        "waiting_human": "⏸️",
+        "completed": "✅",
+        "failed": "❌",
+    }
+    label_map = {
+        "awaiting_audit": "待审计",
+        "running": "执行中",
+        "waiting_human": "待补充",
+        "completed": "完成",
+        "failed": "失败",
+    }
+    icon = icon_map.get(event, "ℹ️")
+    label = label_map.get(event, event)
+
+    lr = job.get("last_result") or {}
+    run_id = lr.get("run_id") or (job.get("audit") or {}).get("run_id") or "-"
+    summary = ((lr.get("orchestration") or {}).get("summary") or {}) if isinstance(lr, dict) else {}
+    done = summary.get("done", "-")
+    total = summary.get("total_tasks", "-")
+
+    msg = f"{icon} {label} | job={job.get('job_id')} | run={run_id} | done={done}/{total}"
+    if event == "waiting_human":
+        waiting = lr.get("waiting") or {}
+        q = str(next(iter(waiting.values()), "")).strip()
+        if q:
+            msg += f"\n问题：{q[:160]}"
+    if event == "failed":
+        err = str(job.get("error", "")).strip()
+        if err:
+            msg += f"\n原因：{err[:180]}"
+
+    try:
+        subprocess.run(
+            [
+                "openclaw",
+                "message",
+                "send",
+                "--channel",
+                "discord",
+                "--target",
+                channel_id,
+                "--message",
+                msg,
+            ],
+            cwd=str(ROOT_DIR),
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+        )
+    except Exception:
+        pass
+
+
+def _notify_once(event: str, job: dict, path: Path) -> None:
+    # Avoid duplicate state notifications across worker passes.
+    marker = str(job.get("last_notified_status", "")).strip()
+    if marker == event:
+        return
+    _notify_main(event, job)
+    fresh = read_json(path)
+    fresh["last_notified_status"] = event
+    fresh["updated_at"] = utc_now()
+    atomic_write_json(path, fresh)
+
+
 def _run_goal_subprocess(
     goal: str,
     audit_gate: bool = True,
@@ -126,12 +200,15 @@ def _process_job(path: Path, timeout_seconds: int) -> None:
             job["error"] = str(e)
         job["updated_at"] = utc_now()
         atomic_write_json(path, job)
+        if job["status"] in {"awaiting_audit", "waiting_human", "completed", "failed"}:
+            _notify_once(job["status"], job, path)
         return
 
     if status == "approved":
         job["status"] = "running"
         job["updated_at"] = utc_now()
         atomic_write_json(path, job)
+        _notify_once("running", job, path)
 
         def _hb():
             fresh = read_json(path)
@@ -158,6 +235,8 @@ def _process_job(path: Path, timeout_seconds: int) -> None:
             job["error"] = str(e)
         job["updated_at"] = utc_now()
         atomic_write_json(path, job)
+        if job["status"] in {"waiting_human", "completed", "failed"}:
+            _notify_once(job["status"], job, path)
         return
 
     if status == "revise_requested":
