@@ -3,6 +3,8 @@ import time
 import os
 import urllib.request
 import urllib.error
+import random
+import re
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -34,6 +36,8 @@ LLM_KEY = os.getenv("LLM_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-4")
 LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "60"))
 MAX_RETRIES = 2
+TASK_ID_RE = re.compile(r"^tsk_[0-9A-HJKMNP-TV-Z]{26}$")
+TASK_ID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 if not LLM_KEY:
     raise RuntimeError(
@@ -94,12 +98,71 @@ def llm_call(messages, retry_count=0):
         logger.error(f"LLM network error: {e}")
         raise RuntimeError(f"LLM network error: {e}")
 
+def _load_agent_capability_hints() -> str:
+    """Load soft capability hints for m2 planning (non-binding guidance)."""
+    include = os.getenv("ORCH_M2_INCLUDE_CAPABILITIES", "1").strip().lower()
+    if include in {"0", "false", "no", "off"}:
+        return ""
+
+    agents_path = Path(__file__).parent.parent / "m5" / "agents.json"
+    if not agents_path.exists():
+        return ""
+
+    try:
+        data = json.loads(agents_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+
+    agents = data.get("agents", []) if isinstance(data, dict) else []
+    if not isinstance(agents, list) or not agents:
+        return ""
+
+    lines: list[str] = [
+        "\nSoft Capability Hints (non-binding):",
+        "- Use these as planning hints only; do not treat as hard constraints.",
+        "- Prioritize minimal user intervention and autonomous data collection.",
+    ]
+
+    for item in agents:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+        caps = item.get("capabilities", []) or []
+        caps_text = ", ".join(str(c) for c in caps if str(c).strip())
+        desc = str(item.get("desc", "")).strip()
+        tail = ""
+        if caps_text:
+            tail += f" | capabilities: {caps_text}"
+        if desc:
+            tail += f" | desc: {desc}"
+        lines.append(f"- {name}{tail}")
+
+    lines.extend(
+        [
+            "Tooling hints:",
+            "- Agents can generally fetch public web information, run shell commands, and produce artifacts.",
+            "- Prefer tasks that let agents fetch public data directly instead of asking users for intermediate files.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _build_goal_prompt(goal: str) -> str:
+    base = USER_PROMPT_TEMPLATE.format(goal=goal)
+    hints = _load_agent_capability_hints()
+    if not hints:
+        return base
+    return f"{base}\n\n{hints}"
+
+
 def generate_tasks(goal: str) -> str:
     """Generate initial task decomposition."""
     logger.info("Generating task decomposition", goal=goal)
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": USER_PROMPT_TEMPLATE.format(goal=goal)}
+        {"role": "user", "content": _build_goal_prompt(goal)}
     ]
     return llm_call(messages)
 
@@ -113,10 +176,56 @@ def repair_tasks(goal: str, bad_json: str, error: Exception) -> str:
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": USER_PROMPT_TEMPLATE.format(goal=goal)},
+        {"role": "user", "content": _build_goal_prompt(goal)},
         {"role": "user", "content": repair_prompt}
     ]
     return llm_call(messages)
+
+
+def _new_task_id() -> str:
+    return "tsk_" + "".join(random.choice(TASK_ID_ALPHABET) for _ in range(26))
+
+
+def _normalize_task_ids(tasks_dict: dict) -> dict:
+    tasks = tasks_dict.get("tasks", [])
+    if not isinstance(tasks, list):
+        return tasks_dict
+
+    id_map = {}
+    used = set()
+
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        old_id = str(task.get("id", ""))
+        if TASK_ID_RE.match(old_id) and old_id not in used:
+            id_map[old_id] = old_id
+            used.add(old_id)
+            continue
+
+        new_id = _new_task_id()
+        while new_id in used:
+            new_id = _new_task_id()
+        id_map[old_id] = new_id
+        used.add(new_id)
+        task["id"] = new_id
+
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        deps = task.get("deps", [])
+        if not isinstance(deps, list):
+            continue
+        normalized = []
+        for dep in deps:
+            dep_key = str(dep)
+            if dep_key in id_map:
+                normalized.append(id_map[dep_key])
+            else:
+                normalized.append(dep_key)
+        task["deps"] = normalized
+
+    return tasks_dict
 
 def decompose(goal: str) -> dict:
     """Decompose goal into tasks with repair loop."""
@@ -134,6 +243,7 @@ def decompose(goal: str) -> dict:
             if "tasks" not in parsed or not isinstance(parsed["tasks"], list):
                 raise RuntimeError("LLM did not return tasks[]")
 
+            parsed = _normalize_task_ids(parsed)
             validate_tasks(parsed)
 
             task_count = len(parsed["tasks"])
