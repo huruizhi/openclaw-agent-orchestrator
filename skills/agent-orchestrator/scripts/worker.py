@@ -130,7 +130,7 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Background worker for orchestrator queue")
     p.add_argument("--once", action="store_true", help="process one pass and exit")
     p.add_argument("--interval", type=float, default=2.0, help="poll interval seconds")
-    p.add_argument("--job-timeout", type=int, default=int(os.getenv("ORCH_WORKER_JOB_TIMEOUT_SECONDS", "300")), help="per-job hard timeout seconds")
+    p.add_argument("--job-timeout", type=int, default=int(os.getenv("ORCH_WORKER_JOB_TIMEOUT_SECONDS", "600")), help="per-job hard timeout seconds")
     args = p.parse_args()
 
     load_env()
