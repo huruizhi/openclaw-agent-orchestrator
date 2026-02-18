@@ -1,0 +1,15 @@
+[Unit]
+Description=Agent Orchestrator Worker
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/clawd/skills/agent-orchestrator
+ExecStart=/usr/bin/python3 /home/ubuntu/clawd/skills/agent-orchestrator/scripts/worker.py --interval 2
+Restart=always
+RestartSec=3
+User=ubuntu
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

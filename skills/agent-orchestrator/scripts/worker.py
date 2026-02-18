@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+from queue_lib import load_env, jobs_dir, read_json, atomic_write_json, utc_now
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+
+def _run_goal(goal: str, audit_gate: bool = True):
+    from orchestrator import run_workflow_from_env
+
+    os.environ["ORCH_AUDIT_GATE"] = "1" if audit_gate else "0"
+    if audit_gate:
+        os.environ["ORCH_AUDIT_DECISION"] = "pending"
+    return run_workflow_from_env(goal)
+
+
+def _process_job(path: Path) -> None:
+    job = read_json(path)
+    status = str(job.get("status", "queued"))
+
+    if status in {"cancelled", "completed", "failed"}:
+        return
+
+    if status in {"queued", "planning"}:
+        job["status"] = "planning"
+        job["updated_at"] = utc_now()
+        atomic_write_json(path, job)
+
+        try:
+            result = _run_goal(job["goal"], audit_gate=True)
+            job["last_result"] = result
+            if result.get("status") == "awaiting_audit":
+                job["status"] = "awaiting_audit"
+                job["audit"]["run_id"] = result.get("run_id")
+            else:
+                job["status"] = "completed"
+        except Exception as e:
+            job["status"] = "failed"
+            job["error"] = str(e)
+        job["updated_at"] = utc_now()
+        atomic_write_json(path, job)
+        return
+
+    if status == "approved":
+        try:
+            result = _run_goal(job["goal"], audit_gate=False)
+            job["last_result"] = result
+            job["status"] = "completed"
+        except Exception as e:
+            job["status"] = "failed"
+            job["error"] = str(e)
+        job["updated_at"] = utc_now()
+        atomic_write_json(path, job)
+        return
+
+    if status == "revise_requested":
+        revision = str(job.get("audit", {}).get("revision", "")).strip()
+        revised_goal = (
+            f"{job['goal']}\n\n[Audit Revision]\n{revision}\n"
+            "要求：只重做任务拆解与分配，输出审计计划，不执行任务。"
+        )
+        job["goal"] = revised_goal
+        job["status"] = "planning"
+        job["updated_at"] = utc_now()
+        atomic_write_json(path, job)
+        return
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description="Background worker for orchestrator queue")
+    p.add_argument("--once", action="store_true", help="process one pass and exit")
+    p.add_argument("--interval", type=float, default=2.0, help="poll interval seconds")
+    args = p.parse_args()
+
+    load_env()
+
+    while True:
+        files = sorted(jobs_dir().glob("*.json"), key=lambda x: x.stat().st_mtime)
+        for f in files:
+            try:
+                _process_job(f)
+            except Exception:
+                pass
+
+        if args.once:
+            break
+        time.sleep(max(0.5, args.interval))
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

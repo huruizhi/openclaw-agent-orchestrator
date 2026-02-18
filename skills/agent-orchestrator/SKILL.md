@@ -117,6 +117,42 @@ bash scripts/run_status.sh <run_id>
 python3 scripts/runner.py status <run_id>
 ```
 
+## Background Worker Queue (stable process management)
+
+Use queue mode to decouple orchestration lifecycle from chat/shell process lifecycle.
+
+Submit a job:
+
+```bash
+python3 scripts/submit.py "<goal>"
+```
+
+Run worker (one pass for testing):
+
+```bash
+python3 scripts/worker.py --once
+```
+
+Run worker continuously:
+
+```bash
+python3 scripts/worker.py --interval 2
+```
+
+Check queued job status:
+
+```bash
+python3 scripts/status.py <job_id>
+```
+
+Audit control for queued jobs:
+
+```bash
+python3 scripts/control.py approve <job_id>
+python3 scripts/control.py revise <job_id> "<revision>"
+python3 scripts/control.py cancel <job_id>
+```
+
 Useful modes:
 
 ```bash
