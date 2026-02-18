@@ -83,10 +83,12 @@ If any check fails, stop and fix before running production goals.
 
 ## Run
 
-Preferred production entrypoint (includes env checks, optional preflight, result file output):
+Preferred production entrypoint (Python runner, includes env checks, optional preflight, stable result output):
 
 ```bash
 bash scripts/run_goal.sh "<goal>"
+# equivalent:
+python3 scripts/runner.py run "<goal>"
 ```
 
 Audit gate (default ON):
@@ -101,6 +103,14 @@ bash scripts/audit_run.sh approve <run_id>
 
 ```bash
 bash scripts/audit_run.sh revise <run_id> "<revision feedback>"
+```
+
+- Query canonical run status (report/state from BASE_PATH):
+
+```bash
+bash scripts/run_status.sh <run_id>
+# equivalent:
+python3 scripts/runner.py status <run_id>
 ```
 
 Useful modes:

@@ -22,10 +22,6 @@ Options:
   --quick               Run preflight but skip integration test
   --output <file>       Save final JSON result to file
   -h, --help            Show this help
-
-Env toggles (optional):
-  RUN_PREFLIGHT=0|1
-  SKIP_INTEGRATION=0|1
 USAGE
 }
 
@@ -68,48 +64,17 @@ GOAL="${GOAL_PARTS[*]:-}"
 
 [[ -f .env ]] || fail ".env not found. Run: cp .env.example .env && edit values"
 
-require_env() {
-  local k="$1"
-  if [[ -z "${!k:-}" ]]; then
-    fail "Missing env: $k"
-  fi
-}
+ARGS=("scripts/runner.py" "run" "$GOAL")
 
-# shellcheck disable=SC1091
-source .env
-
-require_env "OPENCLAW_API_BASE_URL"
-require_env "LLM_URL"
-require_env "LLM_API_KEY"
-
-if [[ "$RUN_PREFLIGHT" == "1" ]]; then
-  log "Running preflight checks (SKIP_INTEGRATION=${SKIP_INTEGRATION})"
-  SKIP_INTEGRATION="$SKIP_INTEGRATION" bash scripts/run_preflight.sh
-else
-  log "Skipping preflight (RUN_PREFLIGHT=0)"
+if [[ "$RUN_PREFLIGHT" == "0" ]]; then
+  ARGS+=("--no-preflight")
+fi
+if [[ "$SKIP_INTEGRATION" == "1" ]]; then
+  ARGS+=("--quick")
+fi
+if [[ -n "$OUTPUT_FILE" ]]; then
+  ARGS+=("--output" "$OUTPUT_FILE")
 fi
 
-RUN_ID="$(date +%Y%m%d_%H%M%S)"
-BASE_PATH_VAL="${BASE_PATH:-./workspace}"
-PROJECT_ID_VAL="${PROJECT_ID:-default_project}"
-
-if [[ "$BASE_PATH_VAL" = /* ]]; then
-  RESOLVED_BASE_PATH="$BASE_PATH_VAL"
-else
-  RESOLVED_BASE_PATH="$ROOT_DIR/$BASE_PATH_VAL"
-fi
-
-DEFAULT_OUTPUT="$RESOLVED_BASE_PATH/$PROJECT_ID_VAL/.orchestrator/runs/latest-${RUN_ID}.json"
-RESULT_PATH="${OUTPUT_FILE:-$DEFAULT_OUTPUT}"
-mkdir -p "$(dirname "$RESULT_PATH")"
-
-log "Starting orchestration"
-TMP_RESULT="$(mktemp)"
-if "$PYTHON_BIN" main.py --goal "$GOAL" | tee "$TMP_RESULT"; then
-  cp "$TMP_RESULT" "$RESULT_PATH"
-  log "Result saved: $RESULT_PATH"
-else
-  rm -f "$TMP_RESULT"
-  fail "orchestration run failed"
-fi
-rm -f "$TMP_RESULT"
+log "Starting orchestration via Python runner"
+"$PYTHON_BIN" "${ARGS[@]}"
