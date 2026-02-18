@@ -115,6 +115,7 @@ def _set_dynamic_project_id(goal: str, run_id: str) -> str:
     workspace_paths.STATE_DIR = workspace_paths.ORCHESTRATOR_DIR / "state"
     workspace_paths.LOGS_DIR = workspace_paths.ORCHESTRATOR_DIR / "logs"
     workspace_paths.RUNS_DIR = workspace_paths.ORCHESTRATOR_DIR / "runs"
+    workspace_paths.ARTIFACTS_DIR = workspace_paths.PROJECT_DIR / "artifacts"
     workspace_paths.init_workspace()
 
     try:
@@ -239,7 +240,9 @@ def run_workflow(goal: str, base_url: str, api_key: str):
     adapter_timeout_seconds = int(os.getenv("OPENCLAW_AGENT_TIMEOUT_SECONDS", "600"))
     adapter = OpenClawSessionAdapter(base_url, api_key, timeout_seconds=adapter_timeout_seconds)
     watcher = SessionWatcher(adapter)
-    executor = Executor(scheduler, adapter, watcher)
+    artifacts_dir = workspace_paths.PROJECT_DIR / "artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    executor = Executor(scheduler, adapter, watcher, artifacts_dir=str(artifacts_dir))
     executor.notifier = notifier
     executor.run_id = run_id
 

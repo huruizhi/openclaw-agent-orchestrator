@@ -54,6 +54,9 @@ STATE_DIR = ORCHESTRATOR_DIR / "state"      # Execution state
 LOGS_DIR = ORCHESTRATOR_DIR / "logs"        # Execution logs
 RUNS_DIR = ORCHESTRATOR_DIR / "runs"        # Run history
 
+# Shared cross-agent artifact exchange directory
+ARTIFACTS_DIR = PROJECT_DIR / "artifacts"
+
 
 def init_workspace():
     """Initialize workspace directory structure.
@@ -66,6 +69,7 @@ def init_workspace():
         STATE_DIR,
         LOGS_DIR,
         RUNS_DIR,
+        ARTIFACTS_DIR,
     ]
 
     for directory in directories:
@@ -122,7 +126,7 @@ def get_artifact_path(filename: str) -> Path:
     Returns:
         Path to artifact file
     """
-    return PROJECT_DIR / filename
+    return ARTIFACTS_DIR / filename
 
 
 def get_task_dir(task_id: str) -> Path:
@@ -174,6 +178,7 @@ def get_workspace_info() -> dict:
         "state_dir": str(STATE_DIR),
         "logs_dir": str(LOGS_DIR),
         "runs_dir": str(RUNS_DIR),
+        "artifacts_dir": str(ARTIFACTS_DIR),
         "base_path_exists": BASE_PATH.exists(),
         "project_dir_exists": PROJECT_DIR.exists(),
         "orchestrator_dir_exists": ORCHESTRATOR_DIR.exists(),

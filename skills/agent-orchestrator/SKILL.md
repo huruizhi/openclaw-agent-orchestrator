@@ -112,14 +112,17 @@ The command prints final JSON to stdout, and `run_goal.sh` also persists it to a
 3. Assign task owners (`m5/agents.json`).
 4. Schedule runnable tasks (`m6`).
 5. Spawn and drive agent sessions (`m7`).
-6. Watch state transitions + collect outputs.
-7. Apply retry policy in executor.
-8. Emit channel notifications (`utils/notifier.py`).
+6. Exchange artifacts via shared directory: `PROJECT_DIR/artifacts/`.
+7. Validate declared output files exist before marking task done.
+8. Apply retry/failure policy in executor.
+9. Emit channel notifications (`utils/notifier.py`).
 
 ## Production Rules
 
 - Fail fast on missing critical env values.
 - Persist task/state artifacts under `.orchestrator/` only.
+- Exchange task outputs through `artifacts/` shared directory (cross-agent handoff).
+- Mark task complete only when declared `outputs` files exist in `artifacts/`.
 - Do not mutate task metadata manually during active runs.
 - If run is `waiting`, control behavior with `ORCH_WAITING_POLICY`:
   - `human` (default): pause and persist waiting context to `.orchestrator/state/waiting_<run_id>.json`
