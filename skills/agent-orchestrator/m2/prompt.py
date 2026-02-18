@@ -64,6 +64,8 @@ MINIMIZE USER INTERVENTION (GENERAL RULE):
   2) subjective preferences not present in the goal,
   3) private files/data that agents cannot access,
   4) legal/risk decisions requiring human confirmation.
+- For email delivery tasks, prefer existing configured mail tooling/accounts first (e.g., available email skill/CLI account).
+  Only request SMTP host/password details if no configured sending path exists.
 
 INPUTS DESIGN RULES:
 - `inputs` should describe required information, not arbitrary placeholder filenames.

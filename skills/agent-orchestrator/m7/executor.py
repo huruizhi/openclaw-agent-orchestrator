@@ -67,6 +67,7 @@ class Executor:
                 "- Write every declared output file into the shared artifacts directory.",
                 "- If an input refers to an artifact filename, read it from the shared artifacts directory.",
                 "- Use exact output filenames from Required Outputs whenever possible.",
+                "- If task requires sending email, prefer existing configured mail tools/accounts before asking for SMTP credentials.",
                 "",
                 "When finished output exactly:",
                 "[TASK_DONE]",
