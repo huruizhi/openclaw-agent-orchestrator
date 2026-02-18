@@ -1,0 +1,11 @@
+{
+  "package": "openclaw",
+  "latest_version": "2026.2.17",
+  "published_at": "2026-02-18T02:47:54.422Z",
+  "dist_tags": {
+    "latest": "2026.2.17",
+    "beta": "2026.2.17"
+  },
+  "registry_modified_at": "2026-02-18T03:17:23.945Z",
+  "fetched_at": "2026-02-18T16:28:00+08:00"
+}
