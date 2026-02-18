@@ -78,10 +78,23 @@ If any check fails, stop and fix before running production goals.
 
 ## Run
 
-Preferred production entrypoint (includes env checks, optional preflight):
+Preferred production entrypoint (includes env checks, optional preflight, result file output):
 
 ```bash
 bash scripts/run_goal.sh "<goal>"
+```
+
+Useful modes:
+
+```bash
+# Quick run: keep preflight but skip integration test
+bash scripts/run_goal.sh --quick "<goal>"
+
+# Fastest run: skip preflight entirely
+bash scripts/run_goal.sh --no-preflight "<goal>"
+
+# Save result JSON to custom file
+bash scripts/run_goal.sh --output workspace/default_project/.orchestrator/runs/my-run.json "<goal>"
 ```
 
 Direct entrypoint:
@@ -90,7 +103,7 @@ Direct entrypoint:
 python3 main.py --goal "<goal>"
 ```
 
-The command prints final JSON to stdout.
+The command prints final JSON to stdout, and `run_goal.sh` also persists it to a runs file.
 
 ## Pipeline Stages
 
