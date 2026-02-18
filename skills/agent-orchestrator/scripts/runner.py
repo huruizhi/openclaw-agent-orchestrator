@@ -68,34 +68,48 @@ def _run_preflight(skip_integration: bool) -> None:
         raise SystemExit(cp.returncode)
 
 
-def cmd_run(args: argparse.Namespace) -> int:
+def _ensure_env_loaded() -> int:
     env_path = ROOT_DIR / ".env"
     if not env_path.exists():
         print("[runner][FAIL] .env not found. Run: cp .env.example .env", file=sys.stderr)
         return 1
-
     _load_env_file(env_path)
+    return 0
 
+
+def _require_core_env() -> int:
     for k in ("OPENCLAW_API_BASE_URL", "LLM_URL", "LLM_API_KEY"):
         if not os.getenv(k, "").strip():
             print(f"[runner][FAIL] Missing env: {k}", file=sys.stderr)
             return 1
+    return 0
 
-    if not args.no_preflight:
-        _run_preflight(skip_integration=args.quick)
 
+def _run_goal(goal: str, output: str | None = None) -> int:
     from orchestrator import run_workflow_from_env  # imported after env load
 
-    result = run_workflow_from_env(args.goal)
+    result = run_workflow_from_env(goal)
     payload = json.dumps(result, ensure_ascii=False)
     print(payload)
 
     run_tag = str(result.get("run_id") or result.get("project_id") or "run")
-    out_path = Path(args.output) if args.output else _default_result_path(run_tag)
+    out_path = Path(output) if output else _default_result_path(run_tag)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[runner] Result saved: {out_path}")
     return 0
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    if _ensure_env_loaded() != 0:
+        return 1
+    if _require_core_env() != 0:
+        return 1
+
+    if not args.no_preflight:
+        _run_preflight(skip_integration=args.quick)
+
+    return _run_goal(args.goal, output=args.output)
 
 
 def _find_run_paths(run_id: str) -> tuple[Path | None, Path | None]:
@@ -131,6 +145,51 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _find_audit_path(run_id: str) -> Path | None:
+    base_path, _ = _resolve_base_project_paths()
+    if not base_path.exists():
+        return None
+    return next(base_path.glob(f"*/.orchestrator/state/audit_{run_id}.json"), None)
+
+
+def cmd_audit(args: argparse.Namespace) -> int:
+    if _ensure_env_loaded() != 0:
+        return 1
+    if _require_core_env() != 0:
+        return 1
+
+    audit_path = _find_audit_path(args.run_id)
+    if not audit_path or not audit_path.exists():
+        print(f"[runner][FAIL] audit state not found for run_id={args.run_id}", file=sys.stderr)
+        return 1
+
+    data = json.loads(audit_path.read_text(encoding="utf-8"))
+    goal = str(data.get("goal", "")).strip()
+    if not goal:
+        print("[runner][FAIL] goal missing in audit file", file=sys.stderr)
+        return 1
+
+    print(f"[runner] run_id={args.run_id}")
+    print(f"[runner] audit_file={audit_path}")
+
+    if args.action == "approve":
+        os.environ["ORCH_AUDIT_GATE"] = "0"
+        return _run_goal(goal)
+
+    revision = str(args.revision or "").strip()
+    if not revision:
+        print("[runner][FAIL] revise requires --revision text", file=sys.stderr)
+        return 1
+
+    revised_goal = (
+        f"{goal}\n\n[Audit Revision]\n{revision}\n"
+        "要求：只重做任务拆解与分配，输出审计计划，不执行任务。"
+    )
+    os.environ["ORCH_AUDIT_GATE"] = "1"
+    os.environ["ORCH_AUDIT_DECISION"] = "pending"
+    return _run_goal(revised_goal)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Stable runner for agent-orchestrator")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -145,6 +204,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("status", help="query run status by run_id")
     p_status.add_argument("run_id", help="run id to lookup")
     p_status.set_defaults(func=cmd_status)
+
+    p_audit = sub.add_parser("audit", help="audit control: approve/revise")
+    p_audit.add_argument("action", choices=["approve", "revise"], help="audit action")
+    p_audit.add_argument("run_id", help="run id to control")
+    p_audit.add_argument("--revision", help="revision text for revise action")
+    p_audit.set_defaults(func=cmd_audit)
 
     return p
 

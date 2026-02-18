@@ -97,12 +97,16 @@ Audit gate (default ON):
 
 ```bash
 bash scripts/audit_run.sh approve <run_id>
+# equivalent:
+python3 scripts/runner.py audit approve <run_id>
 ```
 
 - Revise plan (2A: re-plan only, no execution):
 
 ```bash
 bash scripts/audit_run.sh revise <run_id> "<revision feedback>"
+# equivalent:
+python3 scripts/runner.py audit revise <run_id> --revision "<revision feedback>"
 ```
 
 - Query canonical run status (report/state from BASE_PATH):
