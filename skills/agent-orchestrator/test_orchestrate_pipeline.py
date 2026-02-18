@@ -18,6 +18,14 @@ class DummyNotifier:
 
 
 def test_orchestrate_with_override():
+    import os
+
+    old_agent_id = os.getenv("ORCH_OPENCLAW_AGENT_ID")
+    old_assigned = os.getenv("ORCH_OPENCLAW_ASSIGNED_TO")
+
+    os.environ.pop("ORCH_OPENCLAW_AGENT_ID", None)
+    os.environ.pop("ORCH_OPENCLAW_ASSIGNED_TO", None)
+
     tasks = {
         "tasks": [
             {
@@ -45,18 +53,28 @@ def test_orchestrate_with_override():
         ]
     }
 
-    notifier = DummyNotifier()
-    result = orchestrate("offline test goal", tasks_override=tasks, notifier=notifier)
-    states = result["execution"]["state"]["tasks"]
+    try:
+        notifier = DummyNotifier()
+        result = orchestrate("offline test goal", tasks_override=tasks, notifier=notifier)
+        states = result["execution"]["state"]["tasks"]
 
-    assert states["tsk_a"]["status"] == "completed"
-    assert states["tsk_b"]["status"] == "failed"
-    assert states["tsk_b"]["attempts"] >= 1
-    events = [e["event"] for e in notifier.events]
-    assert "task_dispatched" in events
-    assert "task_completed" in events
-    assert ("task_failed" in events) or ("task_retry" in events)
-    print("✓ Orchestrate offline pipeline test passed")
+        assert states["tsk_a"]["status"] == "completed"
+        assert states["tsk_b"]["status"] == "failed"
+        assert states["tsk_b"]["attempts"] >= 1
+        events = [e["event"] for e in notifier.events]
+        assert "task_dispatched" in events
+        assert "task_completed" in events
+        assert ("task_failed" in events) or ("task_retry" in events)
+        print("✓ Orchestrate offline pipeline test passed")
+    finally:
+        if old_agent_id is None:
+            os.environ.pop("ORCH_OPENCLAW_AGENT_ID", None)
+        else:
+            os.environ["ORCH_OPENCLAW_AGENT_ID"] = old_agent_id
+        if old_assigned is None:
+            os.environ.pop("ORCH_OPENCLAW_ASSIGNED_TO", None)
+        else:
+            os.environ["ORCH_OPENCLAW_ASSIGNED_TO"] = old_assigned
 
 
 def test_orchestrate_openclaw_mapping_minimal():
@@ -64,8 +82,10 @@ def test_orchestrate_openclaw_mapping_minimal():
 
     old_agent_id = os.getenv("ORCH_OPENCLAW_AGENT_ID")
     old_assigned = os.getenv("ORCH_OPENCLAW_ASSIGNED_TO")
+    old_openclaw_base = os.getenv("OPENCLAW_API_BASE_URL")
     os.environ["ORCH_OPENCLAW_AGENT_ID"] = "agent_demo"
     os.environ["ORCH_OPENCLAW_ASSIGNED_TO"] = "default_agent"
+    os.environ["OPENCLAW_API_BASE_URL"] = "http://127.0.0.1:18789"
 
     try:
         tasks = {
@@ -98,6 +118,11 @@ def test_orchestrate_openclaw_mapping_minimal():
             os.environ.pop("ORCH_OPENCLAW_ASSIGNED_TO", None)
         else:
             os.environ["ORCH_OPENCLAW_ASSIGNED_TO"] = old_assigned
+
+        if old_openclaw_base is None:
+            os.environ.pop("OPENCLAW_API_BASE_URL", None)
+        else:
+            os.environ["OPENCLAW_API_BASE_URL"] = old_openclaw_base
 
 
 if __name__ == "__main__":

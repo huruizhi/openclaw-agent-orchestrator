@@ -1,41 +1,66 @@
-"""Tests for OpenClaw execution path in M7."""
+"""Tests for M7 session adapter + watcher integration contract."""
 
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from m7.executor import execute_task
+from m7.session_adapter import OpenClawSessionAdapter
+from m7.watcher import SessionWatcher
 
 
-class FakeOpenClawClient:
-    def sessions_spawn(self, task, agent_id, run_timeout_seconds=600):
-        return {"status": "accepted", "runId": "run_1", "childSessionKey": "child_1"}
+class StubAdapter(OpenClawSessionAdapter):
+    def __init__(self):
+        super().__init__(base_url="http://example.local", api_key="k")
+        self._messages_calls = 0
 
-    def wait_until_done(self, session_key, timeout_seconds=600, poll_interval_seconds=2.0):
-        return {"status": "completed"}
+    def _post(self, path, payload):
+        if path == "/sessions":
+            return {"session_id": "s_1"}
+        if path == "/sessions/s_1/reply":
+            return {"message_id": "u_1"}
+        raise AssertionError(f"unexpected post: {path}")
 
-    def sessions_history(self, session_key, include_tools=True):
-        return {
-            "history": [
-                {"role": "user", "content": "do work"},
-                {"role": "assistant", "content": "work done"},
-            ]
-        }
+    def _get(self, path, query=None):
+        if path != "/sessions/s_1/messages":
+            raise AssertionError(f"unexpected get: {path}")
+
+        self._messages_calls += 1
+        if self._messages_calls == 1:
+            return {"messages": []}
+        if self._messages_calls == 2:
+            return {
+                "messages": [
+                    {"id": "a_1", "role": "assistant", "content": "hello"},
+                    {"id": "a_2", "role": "assistant", "content": "[TASK_DONE]"},
+                ]
+            }
+        return {"messages": []}
 
 
-def test_openclaw_executor_success():
-    task = {
-        "id": "oc1",
-        "title": "Delegated task",
-        "outputs": ["out.md"],
-        "execution": {"type": "openclaw", "agent_id": "agent_demo"},
-    }
-    result = execute_task(task, openclaw_client=FakeOpenClawClient())
-    assert result["ok"] is True
-    assert result["openclaw"]["final_text"] == "work done"
-    print("✓ M7 openclaw executor test passed")
+def test_session_adapter_and_watcher_polling():
+    adapter = StubAdapter()
+    watcher = SessionWatcher(adapter)
+
+    sid = adapter.ensure_session("agent_a")
+    assert sid == "s_1"
+
+    mid = adapter.send_message(sid, "Execute task: demo")
+    assert mid == "u_1"
+
+    watcher.watch(sid)
+
+    events1 = watcher.poll_events()
+    assert events1 == []
+
+    events2 = watcher.poll_events()
+    assert len(events2) == 1
+    assert events2[0]["session_id"] == "s_1"
+    assert [m["id"] for m in events2[0]["messages"]] == ["a_1", "a_2"]
+
+    watcher.unwatch(sid)
+    print("✓ M7 session adapter + watcher test passed")
 
 
 if __name__ == "__main__":
-    test_openclaw_executor_success()
+    test_session_adapter_and_watcher_polling()

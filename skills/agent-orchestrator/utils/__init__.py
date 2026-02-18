@@ -16,7 +16,7 @@ from .paths import (
     LOGS_DIR,
     RUNS_DIR,
 )
-from .notifier import AgentChannelNotifier
+from .notifier import AgentChannelNotifier, AsyncAgentNotifier
 
 __all__ = [
     # Paths
@@ -37,4 +37,5 @@ __all__ = [
     "LOGS_DIR",
     "RUNS_DIR",
     "AgentChannelNotifier",
+    "AsyncAgentNotifier",
 ]

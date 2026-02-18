@@ -1,77 +1,87 @@
-"""M6: Scheduler for task progression based on dependency graph and state."""
-
-from pathlib import Path
-from typing import Dict, List
-
-try:
-    from utils.logger import get_logger, setup_logging, ExtraAdapter
-except ImportError:
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent.parent))
-    from utils.logger import get_logger, setup_logging, ExtraAdapter
-
-
-setup_logging()
-logger = ExtraAdapter(get_logger(__name__), {"module": "M6"})
-
-
 class Scheduler:
-    """Simple dependency-aware scheduler."""
+    """Runtime scheduler state machine for dependency-based task progression."""
 
-    def __init__(self, tasks: List[dict], graph: Dict[str, List[str]], max_retries: int = 2):
-        self.tasks_by_id = {t["id"]: t for t in tasks}
-        self.graph = graph
-        self.max_retries = max_retries
-        self.deps_by_id = {t["id"]: set(t.get("deps", [])) for t in tasks}
+    def __init__(self, graph: dict[str, list[str]], in_degree: dict[str, int], tasks: dict[str, dict]):
+        self.graph = {task_id: list(children) for task_id, children in graph.items()}
+        self.tasks = {task_id: dict(task) for task_id, task in tasks.items()}
 
-    def get_ready_tasks(self, state: dict) -> List[dict]:
-        """Return ready tasks that are pending and deps are completed."""
-        ready = []
-        for task_id, task in self.tasks_by_id.items():
-            info = state["tasks"][task_id]
-            if info["status"] != "pending":
+        self.remaining_deps: dict[str, int] = {
+            task_id: int(in_degree.get(task_id, 0)) for task_id in self.tasks
+        }
+        self.ready: set[str] = set()
+        self.running: set[str] = set()
+        self.done: set[str] = set()
+        self.failed: set[str] = set()
+
+        self._ready_queue: list[str] = []
+
+        for task_id in self.tasks:
+            if self.remaining_deps[task_id] == 0:
+                self.ready.add(task_id)
+                self._ready_queue.append(task_id)
+
+    def get_runnable_tasks(self) -> list[tuple[str, str]]:
+        """Returns list of (agent, task_id) from READY set without state changes."""
+        runnable: list[tuple[str, str]] = []
+        for task_id in sorted(self.ready):
+            if task_id not in self.running:
+                agent = str(self.tasks[task_id].get("assigned_to", ""))
+                runnable.append((agent, task_id))
+        return runnable
+
+    def start_task(self, task_id: str) -> None:
+        """Move task READY -> RUNNING."""
+        if task_id not in self.ready:
+            raise ValueError(f"Task is not ready: {task_id}")
+        self.ready.remove(task_id)
+        self._ready_queue = [tid for tid in self._ready_queue if tid != task_id]
+        self.running.add(task_id)
+
+    def _cascade_fail(self, task_id: str) -> None:
+        for child_id in self.graph.get(task_id, []):
+            if child_id in self.done or child_id in self.failed:
                 continue
-            deps = self.deps_by_id[task_id]
-            if all(state["tasks"][dep]["status"] == "completed" for dep in deps):
-                ready.append(task)
-        logger.debug("Computed ready tasks", ready_count=len(ready))
-        return ready
+            if child_id in self.running:
+                self.running.remove(child_id)
+            if child_id in self.ready:
+                self.ready.remove(child_id)
+            self._ready_queue = [tid for tid in self._ready_queue if tid != child_id]
+            self.failed.add(child_id)
+            self._cascade_fail(child_id)
 
-    def select_batch(
-        self,
-        ready_tasks: List[dict],
-        per_agent_limit: Dict[str, int],
-        global_limit: int,
-    ) -> List[dict]:
-        """Select executable batch with per-agent and global limits."""
-        selected = []
-        used_by_agent: Dict[str, int] = {}
+    def finish_task(self, task_id: str, success: bool) -> None:
+        """Move RUNNING -> DONE or FAILED and unlock children on success."""
+        if task_id in self.done or task_id in self.failed:
+            return
+        if task_id not in self.running:
+            raise ValueError(f"Task is not running: {task_id}")
 
-        for task in ready_tasks:
-            if len(selected) >= global_limit:
-                break
+        self.running.remove(task_id)
 
-            agent = task.get("assigned_to") or "unassigned"
-            limit = int(per_agent_limit.get(agent, per_agent_limit.get("*", 1)))
-            used = used_by_agent.get(agent, 0)
-            if used >= limit:
+        if not success:
+            self.failed.add(task_id)
+            self._cascade_fail(task_id)
+            return
+
+        self.done.add(task_id)
+
+        for child_id in self.graph.get(task_id, []):
+            if child_id not in self.remaining_deps:
                 continue
 
-            selected.append(task)
-            used_by_agent[agent] = used + 1
+            if self.remaining_deps[child_id] > 0:
+                self.remaining_deps[child_id] -= 1
 
-        logger.debug(
-            "Selected execution batch",
-            ready_count=len(ready_tasks),
-            selected_count=len(selected),
-            global_limit=global_limit,
-        )
-        return selected
+            if (
+                self.remaining_deps[child_id] == 0
+                and child_id not in self.ready
+                and child_id not in self.running
+                and child_id not in self.done
+                and child_id not in self.failed
+            ):
+                self.ready.add(child_id)
+                self._ready_queue.append(child_id)
 
-    def on_failure(self, task_id: str, attempts: int) -> str:
-        """Decide next state after a failure."""
-        if attempts <= self.max_retries:
-            logger.warning("Task will retry", task_id=task_id, attempts=attempts, max_retries=self.max_retries)
-            return "pending"
-        logger.warning("Task exhausted retries", task_id=task_id, attempts=attempts)
-        return "failed"
+    def is_finished(self) -> bool:
+        """True if all tasks are DONE or FAILED."""
+        return len(self.done) + len(self.failed) == len(self.tasks)
