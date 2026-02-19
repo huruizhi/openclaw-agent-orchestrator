@@ -18,6 +18,7 @@ if str(ROOT_DIR) not in sys.path:
 MENTION_PREFIX = "@rzhu"
 DEFAULT_MAIN_HEARTBEAT_SECONDS = 180
 DEFAULT_RUNNING_STALE_SECONDS = 300
+DEFAULT_HEARTBEAT_LOG_SECONDS = 30
 
 
 def _slugify_goal(goal: str, limit: int = 24) -> str:
@@ -49,6 +50,18 @@ def _parse_utc_ts(value: str) -> datetime | None:
         return dt.astimezone(timezone.utc)
     except Exception:
         return None
+
+
+def _job_events_path(job_path: Path) -> Path:
+    return job_path.with_suffix(".events.jsonl")
+
+
+def _append_job_event(job_path: Path, event: str, **fields) -> None:
+    payload = {"ts": utc_now(), "event": event, **fields}
+    events_path = _job_events_path(job_path)
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    with events_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
 def _is_running_stale(job: dict) -> bool:
@@ -233,6 +246,8 @@ def _run_goal_subprocess(
     audit_gate: bool = True,
     timeout_seconds: int = 300,
     heartbeat_cb=None,
+    job_path: Path | None = None,
+    job_id: str = "",
 ) -> dict:
     """Run orchestration in isolated subprocess with hard timeout + heartbeat callback."""
     env = os.environ.copy()
@@ -256,13 +271,30 @@ def _run_goal_subprocess(
         stderr=subprocess.PIPE,
         text=True,
     )
+    if job_path is not None:
+        _append_job_event(
+            job_path,
+            "runner_started",
+            job_id=job_id,
+            pid=proc.pid,
+            audit_gate=bool(audit_gate),
+            timeout_seconds=int(timeout_seconds),
+        )
 
     deadline = time.time() + max(30, timeout_seconds)
     while True:
         if heartbeat_cb:
-            heartbeat_cb()
+            heartbeat_cb(proc)
         if time.time() > deadline:
             proc.kill()
+            if job_path is not None:
+                _append_job_event(
+                    job_path,
+                    "runner_timeout",
+                    job_id=job_id,
+                    pid=proc.pid,
+                    timeout_seconds=int(timeout_seconds),
+                )
             raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout_seconds)
         try:
             stdout, stderr = proc.communicate(timeout=2)
@@ -272,6 +304,15 @@ def _run_goal_subprocess(
 
     if proc.returncode != 0:
         err = (stderr or stdout or "").strip()
+        if job_path is not None:
+            _append_job_event(
+                job_path,
+                "runner_failed",
+                job_id=job_id,
+                pid=proc.pid,
+                returncode=int(proc.returncode),
+                error=err[:500],
+            )
         raise RuntimeError(err or f"runner failed with code {proc.returncode}")
 
     lines = (stdout or "").splitlines()
@@ -279,10 +320,27 @@ def _run_goal_subprocess(
         s = line.strip()
         if s.startswith("{") and s.endswith("}"):
             try:
-                return json.loads(s)
+                out = json.loads(s)
+                if job_path is not None:
+                    _append_job_event(
+                        job_path,
+                        "runner_finished",
+                        job_id=job_id,
+                        pid=proc.pid,
+                        result_status=str(out.get("status", "")),
+                        run_id=str(out.get("run_id", "")),
+                    )
+                return out
             except Exception:
                 continue
 
+    if job_path is not None:
+        _append_job_event(
+            job_path,
+            "runner_invalid_output",
+            job_id=job_id,
+            pid=proc.pid,
+        )
     raise RuntimeError("runner output missing result JSON")
 
 
@@ -301,6 +359,7 @@ def _result_to_job_status(result: dict) -> str:
 
 def _process_job(path: Path, timeout_seconds: int) -> None:
     job = read_json(path)
+    job_id = str(job.get("job_id", ""))
     status = str(job.get("status", "queued"))
 
     if status in {"cancelled", "completed", "failed", "waiting_human"}:
@@ -324,19 +383,43 @@ def _process_job(path: Path, timeout_seconds: int) -> None:
                 }
             )
         atomic_write_json(path, job)
+        _append_job_event(
+            path,
+            "running_stale_recovered",
+            job_id=job_id,
+            from_status="running",
+            to_status="approved",
+        )
         status = "approved"
 
     if status in {"queued", "planning"}:
         job["status"] = "planning"
         job["updated_at"] = utc_now()
         atomic_write_json(path, job)
+        _append_job_event(path, "status_changed", job_id=job_id, status="planning")
 
-        def _hb():
+        def _hb(proc=None):
             fresh = read_json(path)
             if fresh.get("status") in {"cancelled", "failed", "completed"}:
                 return
             fresh["heartbeat_at"] = utc_now()
             fresh["updated_at"] = utc_now()
+            now_ts = int(time.time())
+            last_hb_log = int(fresh.get("last_heartbeat_log_ts", 0) or 0)
+            hb_log_interval = max(
+                10,
+                int(os.getenv("ORCH_HEARTBEAT_LOG_SECONDS", str(DEFAULT_HEARTBEAT_LOG_SECONDS))),
+            )
+            if (not last_hb_log) or (now_ts - last_hb_log >= hb_log_interval):
+                fresh["last_heartbeat_log_ts"] = now_ts
+                _append_job_event(
+                    path,
+                    "heartbeat",
+                    job_id=job_id,
+                    status=str(fresh.get("status", "")),
+                    run_id=str((fresh.get("audit") or {}).get("run_id", "")),
+                    pid=(proc.pid if proc is not None else None),
+                )
             atomic_write_json(path, fresh)
             _notify_running_heartbeat(path)
 
@@ -346,6 +429,8 @@ def _process_job(path: Path, timeout_seconds: int) -> None:
                 audit_gate=True,
                 timeout_seconds=timeout_seconds,
                 heartbeat_cb=_hb,
+                job_path=path,
+                job_id=job_id,
             )
             job["last_result"] = result
             job["status"] = _result_to_job_status(result)
@@ -359,6 +444,7 @@ def _process_job(path: Path, timeout_seconds: int) -> None:
             job["error"] = str(e)
         job["updated_at"] = utc_now()
         atomic_write_json(path, job)
+        _append_job_event(path, "status_changed", job_id=job_id, status=str(job.get("status", "")))
         if job["status"] in {"awaiting_audit", "waiting_human", "completed", "failed"}:
             _notify_once(job["status"], job, path)
         return
@@ -367,15 +453,33 @@ def _process_job(path: Path, timeout_seconds: int) -> None:
         job["status"] = "running"
         job["updated_at"] = utc_now()
         atomic_write_json(path, job)
+        _append_job_event(path, "status_changed", job_id=job_id, status="running")
         _notify_once("running", job, path)
 
-        def _hb():
+        def _hb(proc=None):
             fresh = read_json(path)
             if fresh.get("status") in {"cancelled", "failed", "completed"}:
                 return
             fresh["heartbeat_at"] = utc_now()
             fresh["updated_at"] = utc_now()
+            now_ts = int(time.time())
+            last_hb_log = int(fresh.get("last_heartbeat_log_ts", 0) or 0)
+            hb_log_interval = max(
+                10,
+                int(os.getenv("ORCH_HEARTBEAT_LOG_SECONDS", str(DEFAULT_HEARTBEAT_LOG_SECONDS))),
+            )
+            if (not last_hb_log) or (now_ts - last_hb_log >= hb_log_interval):
+                fresh["last_heartbeat_log_ts"] = now_ts
+                _append_job_event(
+                    path,
+                    "heartbeat",
+                    job_id=job_id,
+                    status=str(fresh.get("status", "")),
+                    run_id=str((fresh.get("audit") or {}).get("run_id", "")),
+                    pid=(proc.pid if proc is not None else None),
+                )
             atomic_write_json(path, fresh)
+            _notify_running_heartbeat(path)
 
         try:
             result = _run_goal_subprocess(
@@ -383,6 +487,8 @@ def _process_job(path: Path, timeout_seconds: int) -> None:
                 audit_gate=False,
                 timeout_seconds=timeout_seconds,
                 heartbeat_cb=_hb,
+                job_path=path,
+                job_id=job_id,
             )
             job["last_result"] = result
             job["status"] = _result_to_job_status(result)
@@ -394,6 +500,7 @@ def _process_job(path: Path, timeout_seconds: int) -> None:
             job["error"] = str(e)
         job["updated_at"] = utc_now()
         atomic_write_json(path, job)
+        _append_job_event(path, "status_changed", job_id=job_id, status=str(job.get("status", "")))
         if job["status"] in {"waiting_human", "completed", "failed"}:
             _notify_once(job["status"], job, path)
         return
