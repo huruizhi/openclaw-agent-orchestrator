@@ -142,6 +142,9 @@ python3 scripts/control.py approve <job_id>
 # or
 python3 scripts/control.py revise <job_id> "<revision>"
 
+# 4b) If job is waiting_human, resume with human answer
+python3 scripts/control.py resume <job_id> "<answer>"
+
 # 5) Process one worker pass again (execute after approve / re-plan after revise)
 python3 scripts/worker.py --once
 
@@ -160,8 +163,15 @@ Audit control commands:
 ```bash
 python3 scripts/control.py approve <job_id>
 python3 scripts/control.py revise <job_id> "<revision>"
+python3 scripts/control.py resume <job_id> "<answer>"   # for waiting_human jobs
 python3 scripts/control.py cancel <job_id>
 ```
+
+Job status view (`python3 scripts/status.py <job_id>`) includes:
+- `status_view`
+- `run_id`, `run_status`
+- `human_input_count`
+- `last_human_input` (`at/question/answer`)
 
 Useful modes:
 
@@ -235,6 +245,7 @@ The command prints final JSON to stdout, and `run_goal.sh` also persists it to a
 - Scheduler behavior: `python3 m6/test_scheduler.py`
 - Session execution: `python3 m7/test_executor.py`
 - End-to-end regression: `python3 test_orchestrate_pipeline.py`
+- If queue job stops at `waiting_human`: run `python3 scripts/control.py resume <job_id> "<answer>"` then `python3 scripts/worker.py --once`
 
 ## References (load on demand)
 
