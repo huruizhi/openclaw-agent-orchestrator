@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from queue_lib import load_env, jobs_dir, read_json, atomic_write_json, utc_now, base_path
@@ -16,6 +17,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 MENTION_PREFIX = "@rzhu"
 DEFAULT_MAIN_HEARTBEAT_SECONDS = 180
+DEFAULT_RUNNING_STALE_SECONDS = 300
 
 
 def _slugify_goal(goal: str, limit: int = 24) -> str:
@@ -32,6 +34,30 @@ def _slugify_goal(goal: str, limit: int = 24) -> str:
     if not slug:
         slug = "workflow"
     return slug[:limit].rstrip("-") or "workflow"
+
+
+def _parse_utc_ts(value: str) -> datetime | None:
+    s = str(value or "").strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _is_running_stale(job: dict) -> bool:
+    timeout_seconds = max(60, int(os.getenv("ORCH_RUNNING_STALE_SECONDS", str(DEFAULT_RUNNING_STALE_SECONDS))))
+    hb = _parse_utc_ts(str(job.get("heartbeat_at", "")))
+    if hb is None:
+        return True
+    age = (datetime.now(timezone.utc) - hb).total_seconds()
+    return age > timeout_seconds
 
 
 def _send_main_message(message: str) -> None:
@@ -277,8 +303,28 @@ def _process_job(path: Path, timeout_seconds: int) -> None:
     job = read_json(path)
     status = str(job.get("status", "queued"))
 
-    if status in {"cancelled", "completed", "failed", "waiting_human", "running"}:
+    if status in {"cancelled", "completed", "failed", "waiting_human"}:
         return
+
+    if status == "running":
+        # Recover from stale "running" jobs left behind after worker interruption.
+        if not _is_running_stale(job):
+            return
+        job["status"] = "approved"
+        job["updated_at"] = utc_now()
+        job["last_notified_status"] = ""
+        history = job.setdefault("recovery", [])
+        if isinstance(history, list):
+            history.append(
+                {
+                    "at": utc_now(),
+                    "action": "running_stale_recovered",
+                    "from_status": "running",
+                    "to_status": "approved",
+                }
+            )
+        atomic_write_json(path, job)
+        status = "approved"
 
     if status in {"queued", "planning"}:
         job["status"] = "planning"
