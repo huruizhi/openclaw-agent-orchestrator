@@ -21,21 +21,21 @@ LAB_CHANNEL_ID = os.getenv("LAB_CHANNEL_ID", "1466602081816416455")  # Default t
 DISCORD_NOTIFY_SCRIPT = f"{SKILLS_PATH}/discord-notify/scripts/discord_notify.py"
 
 def browse_x_updates():
-    """Browse X/Twitter to collect important platform updates using browser automation"""
+    """Browse X/Twitter to collect important platform updates using openclaw managed browser"""
     try:
-        # Use browser tool to access X/Twitter
-        # Start browser if not running
-        subprocess.run(["openclaw", "browser", "start"], timeout=10)
+        # Use openclaw managed browser (not Chrome extension relay)
+        # Start openclaw browser profile
+        subprocess.run(["openclaw", "browser", "start", "--profile", "openclaw"], timeout=15)
         
         # Navigate to X/Twitter explore page for trending updates
-        cmd = ["openclaw", "browser", "navigate", "--url", "https://x.com/explore"]
+        cmd = ["openclaw", "browser", "navigate", "--url", "https://x.com/explore", "--profile", "openclaw"]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         
         if result.returncode != 0:
             return [f"Failed to navigate to X: {result.stderr}"]
         
         # Take snapshot to extract content
-        cmd = ["openclaw", "browser", "snapshot", "--format", "markdown"]
+        cmd = ["openclaw", "browser", "snapshot", "--format", "markdown", "--profile", "openclaw"]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         
         if result.returncode == 0:
@@ -45,11 +45,11 @@ def browse_x_updates():
             updates = [content[:1500]]  # Take first portion
             
             # Also check X's official blog or news section
-            cmd2 = ["openclaw", "browser", "navigate", "--url", "https://blog.x.com"]
+            cmd2 = ["openclaw", "browser", "navigate", "--url", "https://blog.x.com", "--profile", "openclaw"]
             result2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=30)
             
             if result2.returncode == 0:
-                cmd3 = ["openclaw", "browser", "snapshot", "--format", "markdown"]
+                cmd3 = ["openclaw", "browser", "snapshot", "--format", "markdown", "--profile", "openclaw"]
                 result3 = subprocess.run(cmd3, capture_output=True, text=True, timeout=30)
                 if result3.returncode == 0:
                     updates.append(result3.stdout[:1500])
