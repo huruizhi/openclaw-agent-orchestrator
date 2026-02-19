@@ -1,94 +1,63 @@
 # Quick Start
 
-## 1. Install Dependencies
+## 1) Install + Configure
 
 ```bash
-pip3 install --user -r requirements.txt
-```
-
-## 2. Configure LLM
-
-```bash
+python3 -m pip install -r requirements.txt
 cp .env.example .env
-# Edit .env and add your API key
 ```
 
-## 3. Test Installation
+Edit `.env` and set at least:
+- `OPENCLAW_API_BASE_URL`
+- `LLM_URL`
+- `LLM_API_KEY`
+
+See `INSTALL.md` and `CONFIG.md` for details.
+
+## 2) Preflight
 
 ```bash
-python3 test_imports.py
+bash scripts/run_preflight.sh
 ```
 
-## 4. Run Example
+## 3) Queue Workflow (Recommended)
 
 ```bash
-python3 -c "
-from m2 import decompose
-import json
+# submit
+python3 scripts/submit.py "<goal>"
 
-result = decompose('获取Hacker News最热帖子 分析内容 写成博客 发送邮箱')
-print(json.dumps(result, indent=2, ensure_ascii=False))
-"
+# plan
+python3 scripts/worker.py --once
+
+# inspect
+python3 scripts/status.py <job_id>
+
+# approve (or revise)
+python3 scripts/control.py approve <job_id>
+
+# execute
+python3 scripts/worker.py --once
+
+# final status
+python3 scripts/status.py <job_id>
 ```
 
-## 5. Run Tests
+If paused for input:
 
 ```bash
-# Unit tests
-python3 m2/test_decompose.py
-
-# Repair loop tests
-python3 m2/test_repair.py
+python3 scripts/control.py resume <job_id> "<answer>"
+python3 scripts/worker.py --once
 ```
 
-## API Usage
+## 4) Direct Runner (Optional)
 
-```python
-from m2 import decompose
-
-# Decompose a goal into tasks
-result = decompose("Build a REST API")
-
-# Access tasks
-for task in result["tasks"]:
-    print(f"{task['title']} - {task['status']}")
+```bash
+python3 scripts/runner.py run "<goal>"
+python3 scripts/runner.py status <run_id>
 ```
 
-## Expected Output
+## 5) If Something Looks Stuck
 
-```json
-{
-  "tasks": [
-    {
-      "id": "tsk_01H8VK0J4R2Q3YN9XMWDPESZAT",
-      "title": "Define API requirements",
-      "status": "pending",
-      "deps": [],
-      "inputs": ["user_requirements"],
-      "outputs": ["api_spec.json"],
-      "done_when": ["Specification documented"],
-      "assigned_to": null
-    }
-  ]
-}
-```
-
-## Troubleshooting
-
-**Missing API Key:**
-```
-RuntimeError: LLM_API_KEY not set
-```
-→ Edit `.env` and add your API key
-
-**Import Error:**
-```
-ModuleNotFoundError: No module named 'jsonschema'
-```
-→ Run `pip3 install --user -r requirements.txt`
-
-**Validation Failed:**
-```
-ValidationError: Task[0] invalid
-```
-→ Check LLM output format, model may need different prompt
+- Check `python3 scripts/status.py <job_id>`
+- Check `BASE_PATH/_orchestrator_queue/jobs/<job_id>.events.jsonl`
+- Read `OPERATIONS.md` for recovery rules

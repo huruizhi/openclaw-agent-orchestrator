@@ -42,19 +42,6 @@ Run the import test:
 python3 test_imports.py
 ```
 
-Expected output:
-```
-Testing dependencies...
-
-✓ jsonschema imported successfully
-✓ python-dotenv imported successfully
-✓ Standard library modules OK
-
-==================================================
-All dependencies satisfied!
-==================================================
-```
-
 ## Dependencies
 
 | Package | Version | Purpose |
@@ -79,10 +66,10 @@ All dependencies satisfied!
    vim .env  # or your preferred editor
    ```
 
-4. Verify setup:
+4. Verify setup and preflight:
    ```bash
    python3 test_imports.py
-   python3 -c "from m2 import decompose; print('Ready!')"
+   bash scripts/run_preflight.sh
    ```
 
 ## Troubleshooting
@@ -111,3 +98,9 @@ sudo yum install python3-pip
 # macOS
 brew install python3
 ```
+
+## Next
+
+- Runtime config: `CONFIG.md`
+- First workflow run: `QUICKSTART.md`
+- Operations and recovery: `OPERATIONS.md`
