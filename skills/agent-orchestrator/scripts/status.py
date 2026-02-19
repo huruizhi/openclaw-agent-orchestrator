@@ -11,6 +11,7 @@ from queue_lib import load_env, jobs_dir, read_json
 def _normalized_view(job: dict) -> dict:
     out = dict(job)
     lr = out.get("last_result") or {}
+    human_inputs = out.get("human_inputs") or []
     if out.get("status") == "approved":
         out["status_view"] = "approved_waiting_worker"
     elif out.get("status") == "running":
@@ -23,6 +24,9 @@ def _normalized_view(job: dict) -> dict:
     if isinstance(lr, dict):
         out["run_id"] = lr.get("run_id") or (out.get("audit") or {}).get("run_id")
         out["run_status"] = lr.get("status")
+    if isinstance(human_inputs, list):
+        out["human_input_count"] = len(human_inputs)
+        out["last_human_input"] = human_inputs[-1] if human_inputs else None
     return out
 
 
