@@ -13,12 +13,9 @@ class Scheduler:
         self.done: set[str] = set()
         self.failed: set[str] = set()
 
-        self._ready_queue: list[str] = []
-
         for task_id in self.tasks:
             if self.remaining_deps[task_id] == 0:
                 self.ready.add(task_id)
-                self._ready_queue.append(task_id)
 
     def get_runnable_tasks(self) -> list[tuple[str, str]]:
         """Returns list of (agent, task_id) from READY set without state changes."""
@@ -34,7 +31,6 @@ class Scheduler:
         if task_id not in self.ready:
             raise ValueError(f"Task is not ready: {task_id}")
         self.ready.remove(task_id)
-        self._ready_queue = [tid for tid in self._ready_queue if tid != task_id]
         self.running.add(task_id)
 
     def _cascade_fail(self, task_id: str) -> None:
@@ -45,7 +41,6 @@ class Scheduler:
                 self.running.remove(child_id)
             if child_id in self.ready:
                 self.ready.remove(child_id)
-            self._ready_queue = [tid for tid in self._ready_queue if tid != child_id]
             self.failed.add(child_id)
             self._cascade_fail(child_id)
 
@@ -80,7 +75,6 @@ class Scheduler:
                 and child_id not in self.failed
             ):
                 self.ready.add(child_id)
-                self._ready_queue.append(child_id)
 
     def is_finished(self) -> bool:
         """True if all tasks are DONE or FAILED."""

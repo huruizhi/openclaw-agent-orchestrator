@@ -24,6 +24,14 @@ class Executor:
             return
         self.state_store.update(task_id, status, error=error)
 
+    def _release_task_session(self, task_id: str, session: str | None) -> None:
+        if session:
+            self.adapter.mark_session_idle(session)
+            self.watcher.unwatch(session)
+            self.session_to_task.pop(session, None)
+        self.task_to_session.pop(task_id, None)
+        self.waiting_tasks.pop(task_id, None)
+
     def _notify(self, tasks_by_id: dict, task_id: str, event: str, **extra) -> None:
         notifier = self.notifier
         if notifier is None:
@@ -178,11 +186,7 @@ class Executor:
                             self._set_task_state(task_id, "completed")
                             self._notify(tasks_by_id, task_id, "task_completed")
 
-                        self.adapter.mark_session_idle(session)
-                        self.watcher.unwatch(session)
-                        self.task_to_session.pop(task_id, None)
-                        self.session_to_task.pop(session, None)
-                        self.waiting_tasks.pop(task_id, None)
+                        self._release_task_session(task_id, session)
                         progressed = True
                         last_progress_at = time.monotonic()
                         break
@@ -191,11 +195,7 @@ class Executor:
                         self.scheduler.finish_task(task_id, False)
                         self._set_task_state(task_id, "failed")
                         self._notify(tasks_by_id, task_id, "task_failed")
-                        self.adapter.mark_session_idle(session)
-                        self.watcher.unwatch(session)
-                        self.task_to_session.pop(task_id, None)
-                        self.session_to_task.pop(session, None)
-                        self.waiting_tasks.pop(task_id, None)
+                        self._release_task_session(task_id, session)
                         progressed = True
                         last_progress_at = time.monotonic()
                         break
@@ -228,12 +228,7 @@ class Executor:
                         "task_failed",
                         error=f"idle timeout after {idle_timeout_seconds}s",
                     )
-                    if session:
-                        self.adapter.mark_session_idle(session)
-                        self.watcher.unwatch(session)
-                        self.session_to_task.pop(session, None)
-                    self.task_to_session.pop(task_id, None)
-                    self.waiting_tasks.pop(task_id, None)
+                    self._release_task_session(task_id, session)
                 last_progress_at = time.monotonic()
 
         return {"status": "finished", "waiting": {}}
