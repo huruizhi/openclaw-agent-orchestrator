@@ -33,10 +33,11 @@ def _normalized_view(job: dict) -> dict:
 def main() -> int:
     p = argparse.ArgumentParser(description="Get queued orchestration job status")
     p.add_argument("job_id")
+    p.add_argument("--project-id", help="project id for queue isolation")
     args = p.parse_args()
 
     load_env()
-    path = jobs_dir() / f"{args.job_id}.json"
+    path = jobs_dir(args.project_id) / f"{args.job_id}.json"
     if not path.exists():
         print(json.dumps({"job_id": args.job_id, "status": "not_found"}, ensure_ascii=False, indent=2))
         return 0

@@ -59,5 +59,5 @@ python3 scripts/runner.py status <run_id>
 ## 5) If Something Looks Stuck
 
 - Check `python3 scripts/status.py <job_id>`
-- Check `BASE_PATH/_orchestrator_queue/jobs/<job_id>.events.jsonl`
+- Check `BASE_PATH/<PROJECT_ID>/.orchestrator/queue/jobs/<job_id>.events.jsonl`
 - Read `OPERATIONS.md` for recovery rules

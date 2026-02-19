@@ -19,7 +19,7 @@
 ## Queue Event Log
 
 - Per-job events file:
-  - `BASE_PATH/_orchestrator_queue/jobs/<job_id>.events.jsonl`
+  - `BASE_PATH/<PROJECT_ID>/.orchestrator/queue/jobs/<job_id>.events.jsonl`
 - Typical events:
   - `status_changed`
   - `runner_started`
@@ -45,7 +45,7 @@
 1. Inspect job:
    - `python3 scripts/status.py <job_id>`
 2. Inspect queue event log:
-   - `tail -n 200 BASE_PATH/_orchestrator_queue/jobs/<job_id>.events.jsonl`
+   - `tail -n 200 BASE_PATH/<PROJECT_ID>/.orchestrator/queue/jobs/<job_id>.events.jsonl`
 3. If `waiting_human`:
    - `python3 scripts/control.py resume <job_id> "<answer>"`
    - `python3 scripts/worker.py --once`

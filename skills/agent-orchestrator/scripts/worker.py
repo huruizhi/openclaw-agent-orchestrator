@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from queue_lib import load_env, jobs_dir, read_json, atomic_write_json, utc_now, base_path
+from queue_lib import load_env, jobs_dir, read_json, atomic_write_json, utc_now, project_root
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
@@ -19,22 +19,6 @@ MENTION_PREFIX = "@rzhu"
 DEFAULT_MAIN_HEARTBEAT_SECONDS = 180
 DEFAULT_RUNNING_STALE_SECONDS = 300
 DEFAULT_HEARTBEAT_LOG_SECONDS = 30
-
-
-def _slugify_goal(goal: str, limit: int = 24) -> str:
-    cleaned = []
-    for ch in str(goal or "").lower():
-        if ("a" <= ch <= "z") or ("0" <= ch <= "9"):
-            cleaned.append(ch)
-        else:
-            cleaned.append("-")
-    slug = "".join(cleaned)
-    while "--" in slug:
-        slug = slug.replace("--", "-")
-    slug = slug.strip("-")
-    if not slug:
-        slug = "workflow"
-    return slug[:limit].rstrip("-") or "workflow"
 
 
 def _parse_utc_ts(value: str) -> datetime | None:
@@ -100,12 +84,11 @@ def _send_main_message(message: str) -> None:
         pass
 
 
-def _find_run_progress(goal: str) -> dict:
-    slug = _slugify_goal(goal)
-    root = base_path()
+def _find_run_progress(project_id: str) -> dict:
+    root = project_root(project_id)
     latest_state = None
     latest_ts = -1.0
-    for state_path in root.glob(f"{slug}_*/.orchestrator/state/*/m4_state.json"):
+    for state_path in root.glob(".orchestrator/state/*/m4_state.json"):
         try:
             ts = state_path.stat().st_mtime
         except Exception:
@@ -206,7 +189,7 @@ def _notify_running_heartbeat(path: Path) -> None:
     if last_ts and (now - last_ts) < interval:
         return
 
-    progress = _find_run_progress(str(fresh.get("goal", "")))
+    progress = _find_run_progress(str(fresh.get("project_id", "")).strip())
     run_id = progress.get("run_id") or (fresh.get("audit") or {}).get("run_id") or "-"
     done = progress.get("done", "-")
     total = progress.get("total", "-")
@@ -520,6 +503,7 @@ def _process_job(path: Path, timeout_seconds: int) -> None:
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Background worker for orchestrator queue")
+    p.add_argument("--project-id", help="project id for queue isolation")
     p.add_argument("--once", action="store_true", help="process one pass and exit")
     p.add_argument("--interval", type=float, default=2.0, help="poll interval seconds")
     p.add_argument("--job-timeout", type=int, default=int(os.getenv("ORCH_WORKER_JOB_TIMEOUT_SECONDS", "2400")), help="per-job hard timeout seconds")
@@ -528,7 +512,7 @@ def main() -> int:
     load_env()
 
     while True:
-        files = sorted(jobs_dir().glob("*.json"), key=lambda x: x.stat().st_mtime)
+        files = sorted(jobs_dir(args.project_id).glob("*.json"), key=lambda x: x.stat().st_mtime)
         for f in files:
             try:
                 _process_job(f, timeout_seconds=max(30, int(args.job_timeout)))

@@ -9,6 +9,7 @@ from queue_lib import load_env, jobs_dir, read_json, atomic_write_json, utc_now
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Control queued orchestration jobs")
+    p.add_argument("--project-id", help="project id for queue isolation")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pa = sub.add_parser("approve")
@@ -28,7 +29,7 @@ def main() -> int:
     args = p.parse_args()
     load_env()
 
-    path = jobs_dir() / f"{args.job_id}.json"
+    path = jobs_dir(args.project_id) / f"{args.job_id}.json"
     if not path.exists():
         print(json.dumps({"job_id": args.job_id, "status": "not_found"}, ensure_ascii=False, indent=2))
         return 1

@@ -64,8 +64,8 @@ This allows multiple projects to coexist without interference:
 See `utils/PATHS.md` for detailed path documentation.
 
 Queue job metadata:
-- `BASE_PATH/_orchestrator_queue/jobs/<job_id>.json`
-- `BASE_PATH/_orchestrator_queue/jobs/<job_id>.events.jsonl`
+- `BASE_PATH/<PROJECT_ID>/.orchestrator/queue/jobs/<job_id>.json`
+- `BASE_PATH/<PROJECT_ID>/.orchestrator/queue/jobs/<job_id>.events.jsonl`
 
 ### Supported Providers
 

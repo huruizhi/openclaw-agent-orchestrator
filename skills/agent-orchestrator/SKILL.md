@@ -10,6 +10,10 @@ Run one workflow from a single goal:
 
 ## Minimal Workflow (Queue Mode)
 
+Queue files are project-isolated under:
+`BASE_PATH/<PROJECT_ID>/.orchestrator/queue/jobs/`.
+Use `PROJECT_ID` env or pass `--project-id` to queue scripts.
+
 ```bash
 # 1) submit
 python3 scripts/submit.py "<goal>"
