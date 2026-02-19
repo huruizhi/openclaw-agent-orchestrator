@@ -18,6 +18,10 @@ def main() -> int:
     pr.add_argument("job_id")
     pr.add_argument("revision")
 
+    ps = sub.add_parser("resume")
+    ps.add_argument("job_id")
+    ps.add_argument("answer")
+
     pc = sub.add_parser("cancel")
     pc.add_argument("job_id")
 
@@ -39,6 +43,57 @@ def main() -> int:
         job["audit"]["decision"] = "revise"
         job["audit"]["revision"] = args.revision
         job["status"] = "revise_requested"
+    elif args.cmd == "resume":
+        if job.get("status") != "waiting_human":
+            print(
+                json.dumps(
+                    {
+                        "job_id": args.job_id,
+                        "status": "invalid_state",
+                        "message": f"resume only allowed from waiting_human, got={job.get('status')}",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 1
+
+        answer = str(args.answer or "").strip()
+        if not answer:
+            print(
+                json.dumps(
+                    {
+                        "job_id": args.job_id,
+                        "status": "invalid_answer",
+                        "message": "resume answer cannot be empty",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 1
+
+        waiting = (job.get("last_result") or {}).get("waiting") or {}
+        question = str(next(iter(waiting.values()), "")).strip()
+        resume_note = "\n\n[Human Input Resume]\n"
+        if question:
+            resume_note += f"Question: {question}\n"
+        resume_note += f"Answer: {answer}\n"
+        resume_note += "要求：结合该回答继续执行目标。"
+
+        job["goal"] = f"{job.get('goal', '').rstrip()}{resume_note}"
+        history = job.setdefault("human_inputs", [])
+        history.append(
+            {
+                "at": utc_now(),
+                "question": question,
+                "answer": answer,
+            }
+        )
+        job["audit"]["decision"] = "approve"
+        job["status"] = "approved"
+        job.pop("error", None)
+        job["last_notified_status"] = ""
     elif args.cmd == "cancel":
         job["status"] = "cancelled"
 
