@@ -13,7 +13,7 @@ import os
 import subprocess
 import urllib.request
 from pathlib import Path
-from queue import Queue, Full, Empty
+from queue import Queue, Full
 from threading import Thread
 from typing import Any, Dict, Optional, Tuple
 
@@ -303,15 +303,12 @@ class AsyncAgentNotifier:
         self.notifier = notifier
         self.queue: "Queue[Optional[Tuple[str, str, Dict[str, Any]]]]" = Queue(maxsize=max_queue)
         self._worker = Thread(target=self._run, daemon=True)
-        self._running = True
+        self._closed = False
         self._worker.start()
 
     def _run(self):
-        while self._running:
-            try:
-                item = self.queue.get(timeout=0.2)
-            except Empty:
-                continue
+        while True:
+            item = self.queue.get()
             if item is None:
                 self.queue.task_done()
                 break
@@ -325,6 +322,8 @@ class AsyncAgentNotifier:
 
     def notify(self, agent: str, event: str, payload: Dict[str, Any]) -> bool:
         """Queue notification without blocking caller."""
+        if self._closed:
+            return False
         try:
             self.queue.put_nowait((agent, event, payload))
             return True
@@ -334,10 +333,15 @@ class AsyncAgentNotifier:
 
     def close(self, wait: bool = True, timeout_seconds: float = 10.0):
         """Flush and stop worker."""
-        self._running = False
+        if self._closed:
+            return
+        self._closed = True
+        if wait:
+            # Block until queue can accept sentinel, guaranteeing prior items remain before it.
+            self.queue.put(None)
+            self._worker.join(timeout=timeout_seconds)
+            return
         try:
             self.queue.put_nowait(None)
         except Full:
             pass
-        if wait:
-            self._worker.join(timeout=timeout_seconds)

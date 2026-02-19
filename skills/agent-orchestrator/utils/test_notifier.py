@@ -218,6 +218,29 @@ def test_async_notifier_queue():
     print("✓ async notifier queue test passed")
 
 
+def test_async_notifier_flush_on_close_wait():
+    class CaptureNotifier:
+        def __init__(self):
+            self.events = []
+
+        def notify(self, agent, event, payload):
+            self.events.append((agent, event, payload.get("task_id")))
+            return True
+
+    base = CaptureNotifier()
+    async_notifier = AsyncAgentNotifier(base, max_queue=10)
+    async_notifier.notify("agent_a", "task_dispatched", {"task_id": "q1"})
+    async_notifier.notify("agent_a", "task_completed", {"task_id": "q1"})
+    async_notifier.close(wait=True)
+
+    assert base.events == [
+        ("agent_a", "task_dispatched", "q1"),
+        ("agent_a", "task_completed", "q1"),
+    ]
+    assert async_notifier.notify("agent_a", "task_failed", {"task_id": "q1"}) is False
+    print("✓ async notifier flush-on-close test passed")
+
+
 if __name__ == "__main__":
     test_notifier_log_channel()
     test_notifier_webhook_channel()
@@ -227,3 +250,4 @@ if __name__ == "__main__":
     test_binding_overrides_wildcard_main_channel()
     test_notifier_invalid_json_raises()
     test_async_notifier_queue()
+    test_async_notifier_flush_on_close_wait()

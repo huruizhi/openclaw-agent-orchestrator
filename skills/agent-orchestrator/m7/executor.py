@@ -127,15 +127,19 @@ class Executor:
 
                 if self.adapter.is_session_idle(session):
                     self.adapter.mark_session_busy(session)
+                    self.scheduler.start_task(task_id)
+                    self._set_task_state(task_id, "running")
+                    self._notify(tasks_by_id, task_id, "task_dispatched")
+                    self.watcher.watch(session)
+                    self.task_to_session[task_id] = session
+                    self.session_to_task[session] = task_id
+                    last_progress_at = time.monotonic()
 
                     prompt = self._build_task_prompt(tasks_by_id[task_id])
                     try:
                         self.adapter.send_message(session, prompt)
                     except Exception as e:
                         # Dispatch failure should fail the task fast (no global hang).
-                        self.adapter.mark_session_idle(session)
-                        self.scheduler.start_task(task_id)
-                        self._set_task_state(task_id, "running")
                         self.scheduler.finish_task(task_id, False)
                         self._set_task_state(task_id, "failed", error=f"dispatch failed: {e}")
                         self._notify(
@@ -144,19 +148,10 @@ class Executor:
                             "task_failed",
                             error=f"dispatch failed: {e}",
                         )
+                        self._release_task_session(task_id, session)
                         progressed = True
                         last_progress_at = time.monotonic()
                         continue
-
-                    self.scheduler.start_task(task_id)
-                    self._set_task_state(task_id, "running")
-                    self._notify(tasks_by_id, task_id, "task_dispatched")
-
-                    self.watcher.watch(session)
-
-                    self.task_to_session[task_id] = session
-                    self.session_to_task[session] = task_id
-                    last_progress_at = time.monotonic()
 
             events = self.watcher.poll_events()
 
