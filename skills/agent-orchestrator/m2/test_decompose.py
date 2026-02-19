@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from m2.decompose import decompose, strip_codeblock
+from m2.decompose import decompose, strip_codeblock, _normalize_task_ids
 from m2.validate import validate_tasks
 
 
@@ -101,6 +101,51 @@ def test_decompose_with_mock():
     validate_tasks(result)
     print("✓ decompose output passed validation")
 
+
+def test_normalize_task_ids_repairs_invalid_and_deps():
+    bad = {
+        "tasks": [
+            {
+                "id": "bad-id-1",
+                "title": "Task A",
+                "status": "pending",
+                "deps": [],
+                "inputs": [],
+                "outputs": [],
+                "done_when": ["ok"],
+            },
+            {
+                "id": "bad-id-2",
+                "title": "Task B",
+                "status": "pending",
+                "deps": ["bad-id-1"],
+                "inputs": [],
+                "outputs": [],
+                "done_when": ["ok"],
+            },
+            {
+                "id": "bad-id-3",
+                "title": "Task C",
+                "status": "pending",
+                "deps": ["bad-id-2"],
+                "inputs": [],
+                "outputs": [],
+                "done_when": ["ok"],
+            },
+        ]
+    }
+    fixed = _normalize_task_ids(bad)
+    t0 = fixed["tasks"][0]["id"]
+    t1 = fixed["tasks"][1]["id"]
+    t2 = fixed["tasks"][2]["id"]
+    assert t0.startswith("tsk_") and len(t0) == 30
+    assert t1.startswith("tsk_") and len(t1) == 30
+    assert t2.startswith("tsk_") and len(t2) == 30
+    assert fixed["tasks"][1]["deps"] == [t0]
+    assert fixed["tasks"][2]["deps"] == [t1]
+    validate_tasks(fixed)
+    print("✓ normalize_task_ids repaired invalid IDs and deps")
+
 def test_invalid_response_handling():
     print("\nTesting error handling...")
 
@@ -161,5 +206,6 @@ if __name__ == "__main__":
     test_strip_codeblock()
     test_validate_directly()
     test_decompose_with_mock()
+    test_normalize_task_ids_repairs_invalid_and_deps()
     test_invalid_response_handling()
     test_real_api_call()

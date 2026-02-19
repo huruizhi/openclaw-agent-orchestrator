@@ -1,4 +1,4 @@
-"""Tests for M7 session adapter + watcher integration contract."""
+"""Tests for M7 command-based session adapter + watcher integration."""
 
 from pathlib import Path
 import sys
@@ -11,31 +11,19 @@ from m7.watcher import SessionWatcher
 
 class StubAdapter(OpenClawSessionAdapter):
     def __init__(self):
-        super().__init__(base_url="http://example.local", api_key="k")
-        self._messages_calls = 0
+        super().__init__(base_url="http://unused", api_key="unused")
 
-    def _post(self, path, payload):
-        if path == "/sessions":
-            return {"session_id": "s_1"}
-        if path == "/sessions/s_1/reply":
-            return {"message_id": "u_1"}
-        raise AssertionError(f"unexpected post: {path}")
-
-    def _get(self, path, query=None):
-        if path != "/sessions/s_1/messages":
-            raise AssertionError(f"unexpected get: {path}")
-
-        self._messages_calls += 1
-        if self._messages_calls == 1:
-            return {"messages": []}
-        if self._messages_calls == 2:
-            return {
-                "messages": [
-                    {"id": "a_1", "role": "assistant", "content": "hello"},
-                    {"id": "a_2", "role": "assistant", "content": "[TASK_DONE]"},
+    def _run_agent_send(self, session_id, agent_name, text):
+        return {
+            "runId": "run_1",
+            "status": "ok",
+            "result": {
+                "payloads": [
+                    {"text": "hello from agent", "mediaUrl": None},
+                    {"text": "[TASK_DONE]", "mediaUrl": None},
                 ]
-            }
-        return {"messages": []}
+            },
+        }
 
 
 def test_session_adapter_and_watcher_polling():
@@ -43,23 +31,24 @@ def test_session_adapter_and_watcher_polling():
     watcher = SessionWatcher(adapter)
 
     sid = adapter.ensure_session("agent_a")
-    assert sid == "s_1"
+    assert sid
 
     mid = adapter.send_message(sid, "Execute task: demo")
-    assert mid == "u_1"
+    assert mid == "run_1"
 
     watcher.watch(sid)
-
-    events1 = watcher.poll_events()
-    assert events1 == []
+    events = watcher.poll_events()
+    assert len(events) == 1
+    assert events[0]["session_id"] == sid
+    assert len(events[0]["messages"]) == 1
+    assert events[0]["messages"][0]["role"] == "assistant"
+    assert "[TASK_DONE]" in events[0]["messages"][0]["content"]
 
     events2 = watcher.poll_events()
-    assert len(events2) == 1
-    assert events2[0]["session_id"] == "s_1"
-    assert [m["id"] for m in events2[0]["messages"]] == ["a_1", "a_2"]
+    assert events2 == []
 
     watcher.unwatch(sid)
-    print("✓ M7 session adapter + watcher test passed")
+    print("✓ M7 command session adapter + watcher test passed")
 
 
 if __name__ == "__main__":

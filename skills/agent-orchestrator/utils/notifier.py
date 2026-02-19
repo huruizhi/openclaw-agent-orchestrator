@@ -10,9 +10,8 @@ Example:
 
 import json
 import os
+import subprocess
 import urllib.request
-import urllib.error
-import time
 from pathlib import Path
 from queue import Queue, Full, Empty
 from threading import Thread
@@ -41,8 +40,7 @@ class AgentChannelNotifier:
 
     def _validate_config(self) -> None:
         """Validate notifier config and raise on misconfiguration."""
-        valid_types = {"log", "webhook", "discord_tool", "discord_api"}
-        has_discord = False
+        valid_types = {"log", "webhook", "discord_tool"}
 
         for agent, cfg in self.channels.items():
             if not isinstance(cfg, dict):
@@ -52,15 +50,9 @@ class AgentChannelNotifier:
                 raise ValueError(f"Unsupported channel type '{ctype}' for '{agent}'")
             if ctype == "webhook" and not str(cfg.get("url", "")).strip():
                 raise ValueError(f"Webhook channel for '{agent}' missing 'url'")
-            if ctype in {"discord_tool", "discord_api"}:
-                has_discord = True
+            if ctype == "discord_tool":
                 if not str(cfg.get("channel_id", "")).strip():
                     raise ValueError(f"discord channel for '{agent}' missing 'channel_id'")
-
-        if has_discord and not self._resolve_discord_token():
-            raise ValueError(
-                "Discord token missing: set ORCH_DISCORD_BOT_TOKEN or configure channels.discord.token in ~/.openclaw/openclaw.json"
-            )
 
     @staticmethod
     def _load_bound_channels(config_path: Optional[str] = None) -> Dict[str, str]:
@@ -130,7 +122,7 @@ class AgentChannelNotifier:
     def _channel_for_agent(self, agent: str) -> Optional[dict]:
         # Priority 1: openclaw.json bindings (agent-specific)
         if agent in self.bound_channels:
-            return {"type": "discord_api", "channel_id": self.bound_channels[agent]}
+            return {"type": "discord_tool", "channel_id": self.bound_channels[agent]}
 
         # Priority 2: explicit per-agent env/channel map
         found = self.channels.get(agent)
@@ -139,7 +131,7 @@ class AgentChannelNotifier:
 
         # Priority 3: binding wildcard fallback
         if "*" in self.bound_channels:
-            return {"type": "discord_api", "channel_id": self.bound_channels["*"]}
+            return {"type": "discord_tool", "channel_id": self.bound_channels["*"]}
 
         # Priority 4: env wildcard fallback
         found = self.channels.get("*")
@@ -198,89 +190,38 @@ class AgentChannelNotifier:
             return "❌ 任务失败"
         return "📣 任务通知"
 
-    @staticmethod
-    def _resolve_discord_token() -> str:
-        token = os.getenv("ORCH_DISCORD_BOT_TOKEN", "").strip()
-        if token:
-            return token
-        cfg_path = Path(
-            os.getenv("ORCH_OPENCLAW_CONFIG_PATH", str(Path.home() / ".openclaw" / "openclaw.json"))
-        )
-        if not cfg_path.exists():
-            return ""
+    def _send_discord_via_tool(self, channel_id: str, message: str) -> bool:
+        cmd = [
+            "openclaw",
+            "message",
+            "send",
+            "--channel",
+            "discord",
+            "--target",
+            channel_id,
+            "--message",
+            message,
+            "--json",
+        ]
         try:
-            data = json.loads(cfg_path.read_text(encoding="utf-8"))
-            return str((data.get("channels", {}).get("discord", {}) or {}).get("token", "")).strip()
-        except Exception:
-            return ""
-
-    @staticmethod
-    def _discord_color(severity: str) -> int:
-        if severity == "error":
-            return 0xE74C3C
-        if severity == "warn":
-            return 0xF39C12
-        return 0x3498DB
-
-    def _send_discord_message(
-        self,
-        token: str,
-        channel_id: str,
-        message: str,
-        title: str,
-        severity: str,
-        mention: str = "",
-        retry_max: int = 1,
-        retry_delays: str = "3",
-    ) -> bool:
-        url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
-        payload = {
-            "content": f"{mention}\n{message}".strip() if mention else message,
-            "embeds": [
-                {
-                    "title": title,
-                    "description": message,
-                    "color": self._discord_color(severity),
-                }
-            ],
-        }
-        headers = {
-            "Authorization": f"Bot {token}",
-            "Content-Type": "application/json",
-        }
-        delays = []
-        for x in str(retry_delays).split(","):
-            x = x.strip()
-            if not x:
-                continue
-            try:
-                delays.append(float(x))
-            except Exception:
-                pass
-        if not delays:
-            delays = [3.0]
-
-        for i in range(max(1, retry_max)):
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                headers=headers,
-                method="POST",
+            cp = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=self.timeout_seconds,
             )
-            try:
-                with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
-                    if getattr(resp, "status", 200) in (200, 201, 204):
-                        return True
-            except urllib.error.HTTPError as e:
-                if i == retry_max - 1:
-                    logger.warning("Discord API failed", code=e.code, reason=str(e))
-            except Exception as e:
-                if i == retry_max - 1:
-                    logger.warning("Discord notify failed", error=str(e))
-
-            if i < retry_max - 1:
-                time.sleep(delays[min(i, len(delays) - 1)])
-        return False
+            if cp.returncode != 0:
+                logger.warning(
+                    "Discord tool notify failed",
+                    channel_id=channel_id,
+                    error=(cp.stderr or cp.stdout or "").strip(),
+                )
+                return False
+            return True
+        except Exception as e:
+            logger.warning("Discord tool notify failed", channel_id=channel_id, error=str(e))
+            return False
 
     def notify(self, agent: str, event: str, payload: Dict[str, Any]) -> bool:
         channel = self._channel_for_agent(agent or "")
@@ -325,16 +266,12 @@ class AgentChannelNotifier:
                 logger.warning("Webhook notify failed", agent=agent, event=event, error=str(e))
                 return False
 
-        if ctype in {"discord_tool", "discord_api"}:
+        if ctype == "discord_tool":
             channel_id = channel_id or str(payload.get("channel_id") or "").strip()
             if not channel_id:
                 logger.warning("Discord channel missing channel_id", agent=agent, event=event)
                 return False
 
-            token = self._resolve_discord_token()
-            if not token:
-                logger.warning("Discord token missing", agent=agent, event=event)
-                return False
             severity = str(
                 payload.get("severity")
                 or channel.get("severity")
@@ -343,19 +280,8 @@ class AgentChannelNotifier:
             title = str(payload.get("notify_title") or channel.get("title") or self._title_for_event(event))
             job_name = str(payload.get("job_name") or payload.get("task_id") or "orchestrator")
             message = str(payload.get("message") or self._format_message(event, payload))
-            mention = str(channel.get("mention", ""))
-            retry_max = int(channel.get("retry_max", os.getenv("ORCH_DISCORD_RETRY_MAX", "1")))
-            retry_delays = str(channel.get("retry_delays", os.getenv("ORCH_DISCORD_RETRY_DELAYS", "3")))
-            ok = self._send_discord_message(
-                token=token,
-                channel_id=channel_id,
-                message=message,
-                title=title,
-                severity=severity,
-                mention=mention,
-                retry_max=retry_max,
-                retry_delays=retry_delays,
-            )
+
+            ok = self._send_discord_via_tool(channel_id=channel_id, message=message)
             if not ok:
                 logger.warning(
                     "Discord notify failed",

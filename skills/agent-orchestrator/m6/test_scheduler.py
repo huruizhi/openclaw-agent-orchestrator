@@ -1,4 +1,4 @@
-"""Tests for M6 scheduler."""
+"""Tests for M6 scheduler state machine."""
 
 from pathlib import Path
 import sys
@@ -8,57 +8,94 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from m6.scheduler import Scheduler
 
 
-def test_scheduler_ready_and_retry():
-    tasks = [
-        {"id": "a", "deps": [], "title": "A"},
-        {"id": "b", "deps": ["a"], "title": "B"},
-    ]
-    graph = {"a": ["b"], "b": []}
-    scheduler = Scheduler(tasks, graph, max_retries=1)
-
-    state = {
-        "tasks": {
-            "a": {"status": "pending", "attempts": 0},
-            "b": {"status": "pending", "attempts": 0},
-        }
+def test_scheduler_success_flow():
+    graph = {
+        "a": ["b", "c"],
+        "b": ["d"],
+        "c": ["d"],
+        "d": [],
+    }
+    in_degree = {"a": 0, "b": 1, "c": 1, "d": 2}
+    tasks = {
+        "a": {"id": "a", "assigned_to": "agent_a"},
+        "b": {"id": "b", "assigned_to": "agent_b"},
+        "c": {"id": "c", "assigned_to": "agent_c"},
+        "d": {"id": "d", "assigned_to": "agent_d"},
     }
 
-    ready = scheduler.get_ready_tasks(state)
-    assert [t["id"] for t in ready] == ["a"]
+    scheduler = Scheduler(graph, in_degree, tasks)
 
-    state["tasks"]["a"]["status"] = "completed"
-    ready = scheduler.get_ready_tasks(state)
-    assert [t["id"] for t in ready] == ["b"]
+    runnable = scheduler.get_runnable_tasks()
+    assert runnable == [("agent_a", "a")]
 
-    assert scheduler.on_failure("b", 1) == "pending"
-    assert scheduler.on_failure("b", 2) == "failed"
-    print("✓ M6 scheduler retry test passed")
+    scheduler.start_task("a")
+    scheduler.finish_task("a", True)
+
+    runnable2 = scheduler.get_runnable_tasks()
+    assert runnable2 == [("agent_b", "b"), ("agent_c", "c")]
+
+    scheduler.start_task("b")
+    scheduler.finish_task("b", True)
+
+    scheduler.start_task("c")
+    scheduler.finish_task("c", True)
+
+    runnable3 = scheduler.get_runnable_tasks()
+    assert runnable3 == [("agent_d", "d")]
+
+    scheduler.start_task("d")
+    scheduler.finish_task("d", True)
+
+    assert scheduler.is_finished() is True
+    print("✓ M6 scheduler success flow test passed")
 
 
-def test_scheduler_agent_limit_batch():
-    tasks = [
-        {"id": "a1", "deps": [], "title": "A1", "assigned_to": "agent_a"},
-        {"id": "a2", "deps": [], "title": "A2", "assigned_to": "agent_a"},
-        {"id": "b1", "deps": [], "title": "B1", "assigned_to": "agent_b"},
-    ]
-    graph = {"a1": [], "a2": [], "b1": []}
-    scheduler = Scheduler(tasks, graph)
-    state = {
-        "tasks": {
-            "a1": {"status": "pending", "attempts": 0},
-            "a2": {"status": "pending", "attempts": 0},
-            "b1": {"status": "pending", "attempts": 0},
-        }
+def test_scheduler_failure_cascade():
+    graph = {
+        "a": ["b"],
+        "b": ["c"],
+        "c": [],
     }
-    ready = scheduler.get_ready_tasks(state)
-    batch = scheduler.select_batch(ready, {"agent_a": 1, "agent_b": 1, "*": 1}, global_limit=3)
-    ids = [t["id"] for t in batch]
-    assert len(ids) == 2
-    assert "b1" in ids
-    assert ("a1" in ids) ^ ("a2" in ids)
-    print("✓ M6 scheduler batch/limit test passed")
+    in_degree = {"a": 0, "b": 1, "c": 1}
+    tasks = {
+        "a": {"id": "a", "assigned_to": "agent_a"},
+        "b": {"id": "b", "assigned_to": "agent_b"},
+        "c": {"id": "c", "assigned_to": "agent_c"},
+    }
+
+    scheduler = Scheduler(graph, in_degree, tasks)
+    scheduler.start_task("a")
+    scheduler.finish_task("a", False)
+
+    assert scheduler.failed == {"a", "b", "c"}
+    assert scheduler.is_finished() is True
+    print("✓ M6 scheduler failure cascade test passed")
+
+
+def test_scheduler_error_handling():
+    graph = {"a": []}
+    in_degree = {"a": 0}
+    tasks = {"a": {"id": "a", "assigned_to": "agent_a"}}
+
+    scheduler = Scheduler(graph, in_degree, tasks)
+
+    try:
+        scheduler.finish_task("a", True)
+        raise AssertionError("Expected ValueError for non-running task")
+    except ValueError:
+        pass
+
+    scheduler.start_task("a")
+    try:
+        scheduler.start_task("a")
+        raise AssertionError("Expected ValueError for non-ready task")
+    except ValueError:
+        pass
+
+    print("✓ M6 scheduler error handling test passed")
 
 
 if __name__ == "__main__":
-    test_scheduler_ready_and_retry()
-    test_scheduler_agent_limit_batch()
+    test_scheduler_success_flow()
+    test_scheduler_failure_cascade()
+    test_scheduler_error_handling()

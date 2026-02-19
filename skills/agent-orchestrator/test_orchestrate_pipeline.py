@@ -43,7 +43,7 @@ def test_run_workflow_entrypoint():
             self.tasks_by_id = tasks_by_id
 
     class DummyAdapter:
-        def __init__(self, base_url, api_key):
+        def __init__(self, base_url, api_key, **kwargs):
             self.base_url = base_url
             self.api_key = api_key
 

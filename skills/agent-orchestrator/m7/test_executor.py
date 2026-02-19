@@ -38,6 +38,7 @@ class FakeAdapter:
         self._poll_script = list(poll_script)
         self._busy = set()
         self._sid = 0
+        self.sent_prompts = []
 
     def ensure_session(self, agent_name):
         self._sid += 1
@@ -53,6 +54,7 @@ class FakeAdapter:
         self._busy.discard(session_id)
 
     def send_message(self, session_id, text):
+        self.sent_prompts.append(text)
         return "m_1"
 
     def poll_messages(self, session_id):
@@ -91,6 +93,9 @@ def test_executor_done_flow():
     assert result == {"status": "finished", "waiting": {}}
     assert scheduler.started == ["t1"]
     assert scheduler.finished == [("t1", True)]
+    assert "[TASK_DONE]" in adapter.sent_prompts[0]
+    assert "[TASK_FAILED]" in adapter.sent_prompts[0]
+    assert "[TASK_WAITING]" in adapter.sent_prompts[0]
     print("✓ M7 executor done flow test passed")
 
 
