@@ -22,6 +22,7 @@ from .logger import get_logger, setup_logging, ExtraAdapter
 
 setup_logging()
 logger = ExtraAdapter(get_logger(__name__), {"module": "NOTIFIER"})
+MENTION_PREFIX = "@rzhu"
 
 
 class AgentChannelNotifier:
@@ -146,6 +147,15 @@ class AgentChannelNotifier:
             return text
         return text[: limit - 1] + "…"
 
+    @staticmethod
+    def _with_mention(message: str) -> str:
+        text = str(message or "").strip()
+        if not text:
+            return MENTION_PREFIX
+        if text.startswith(MENTION_PREFIX):
+            return text
+        return f"{MENTION_PREFIX} {text}"
+
     @classmethod
     def _format_message(cls, event: str, payload: Dict[str, Any]) -> str:
         run_id = payload.get("run_id", "-")
@@ -160,20 +170,25 @@ class AgentChannelNotifier:
             output_brief = cls._short_text(", ".join(str(x) for x in outputs[:2]), 50)
 
         if event == "task_dispatched":
-            return f"🟢 开始 | task={task_id} | {title or '-'} | run={run_id}"
+            return cls._with_mention(f"🟢 开始 | task={task_id} | {title or '-'} | run={run_id}")
         if event == "task_completed":
             extra = f" | outputs={output_brief}" if output_brief else ""
-            return f"✅ 完成 | task={task_id} | {title or '-'} | run={run_id}{extra}"
+            return cls._with_mention(f"✅ 完成 | task={task_id} | {title or '-'} | run={run_id}{extra}")
         if event == "task_retry":
-            return f"🔁 重试 | task={task_id} | 第{attempts}次 | err={error or '-'}"
+            return cls._with_mention(f"🔁 重试 | task={task_id} | 第{attempts}次 | err={error or '-'}")
+        if event == "task_waiting":
+            question = cls._short_text(payload.get("question", ""), 120)
+            return cls._with_mention(f"⏸️ 待补充 | task={task_id} | {title or '-'} | 问题={question or '-'}")
         if event in {"task_failed", "task_ended_failed"}:
-            return f"❌ 失败 | task={task_id} | {title or '-'} | err={error or '-'}"
-        return json.dumps(payload, ensure_ascii=False)
+            return cls._with_mention(f"❌ 失败 | task={task_id} | {title or '-'} | err={error or '-'}")
+        return cls._with_mention(json.dumps(payload, ensure_ascii=False))
 
     @staticmethod
     def _severity_for_event(event: str) -> str:
         if event in {"task_failed", "task_ended_failed"}:
             return "error"
+        if event == "task_waiting":
+            return "warn"
         if event == "task_retry":
             return "warn"
         return "info"
@@ -186,6 +201,8 @@ class AgentChannelNotifier:
             return "✅ 任务完成"
         if event == "task_retry":
             return "🔁 任务重试"
+        if event == "task_waiting":
+            return "⏸️ 任务待补充"
         if event in {"task_failed", "task_ended_failed"}:
             return "❌ 任务失败"
         return "📣 任务通知"
@@ -279,7 +296,7 @@ class AgentChannelNotifier:
             )
             title = str(payload.get("notify_title") or channel.get("title") or self._title_for_event(event))
             job_name = str(payload.get("job_name") or payload.get("task_id") or "orchestrator")
-            message = str(payload.get("message") or self._format_message(event, payload))
+            message = self._with_mention(str(payload.get("message") or self._format_message(event, payload)))
 
             ok = self._send_discord_via_tool(channel_id=channel_id, message=message)
             if not ok:

@@ -45,6 +45,8 @@ class Executor:
             **extra,
         }
         notifier.notify(agent, event, payload)
+        if event in {"task_failed", "task_waiting"} and agent != "main":
+            notifier.notify("main", event, {**payload, "source_agent": agent})
 
     def _build_task_prompt(self, task: dict) -> str:
         title = str(task.get("title", "")).strip()

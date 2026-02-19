@@ -9,11 +9,110 @@ import sys
 import time
 from pathlib import Path
 
-from queue_lib import load_env, jobs_dir, read_json, atomic_write_json, utc_now
+from queue_lib import load_env, jobs_dir, read_json, atomic_write_json, utc_now, base_path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+MENTION_PREFIX = "@rzhu"
+DEFAULT_MAIN_HEARTBEAT_SECONDS = 180
+
+
+def _slugify_goal(goal: str, limit: int = 24) -> str:
+    cleaned = []
+    for ch in str(goal or "").lower():
+        if ("a" <= ch <= "z") or ("0" <= ch <= "9"):
+            cleaned.append(ch)
+        else:
+            cleaned.append("-")
+    slug = "".join(cleaned)
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    slug = slug.strip("-")
+    if not slug:
+        slug = "workflow"
+    return slug[:limit].rstrip("-") or "workflow"
+
+
+def _send_main_message(message: str) -> None:
+    channel_id = os.getenv("ORCH_MAIN_CHANNEL_ID", "").strip()
+    if not channel_id:
+        return
+    try:
+        subprocess.run(
+            [
+                "openclaw",
+                "message",
+                "send",
+                "--channel",
+                "discord",
+                "--target",
+                channel_id,
+                "--message",
+                message,
+            ],
+            cwd=str(ROOT_DIR),
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+        )
+    except Exception:
+        pass
+
+
+def _find_run_progress(goal: str) -> dict:
+    slug = _slugify_goal(goal)
+    root = base_path()
+    latest_state = None
+    latest_ts = -1.0
+    for state_path in root.glob(f"{slug}_*/.orchestrator/state/*/m4_state.json"):
+        try:
+            ts = state_path.stat().st_mtime
+        except Exception:
+            continue
+        if ts > latest_ts:
+            latest_ts = ts
+            latest_state = state_path
+
+    if latest_state is None:
+        return {}
+
+    try:
+        payload = json.loads(latest_state.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    tasks = (payload.get("tasks") or {}) if isinstance(payload, dict) else {}
+    if not isinstance(tasks, dict):
+        return {}
+
+    total = len(tasks)
+    done = 0
+    failed = 0
+    running = 0
+    waiting = 0
+    for item in tasks.values():
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status", "")).strip().lower()
+        if status == "completed":
+            done += 1
+        elif status == "failed":
+            failed += 1
+        elif status == "running":
+            running += 1
+        elif status == "waiting_human":
+            waiting += 1
+
+    return {
+        "run_id": latest_state.parent.name,
+        "total": total,
+        "done": done,
+        "failed": failed,
+        "running": running,
+        "waiting": waiting,
+    }
 
 
 def _notify_main(event: str, job: dict) -> None:
@@ -44,7 +143,7 @@ def _notify_main(event: str, job: dict) -> None:
     done = summary.get("done", "-")
     total = summary.get("total_tasks", "-")
 
-    msg = f"{icon} {label} | job={job.get('job_id')} | run={run_id} | done={done}/{total}"
+    msg = f"{MENTION_PREFIX} {icon} {label} | job={job.get('job_id')} | run={run_id} | done={done}/{total}"
     if event == "waiting_human":
         waiting = lr.get("waiting") or {}
         q = str(next(iter(waiting.values()), "")).strip()
@@ -55,27 +154,40 @@ def _notify_main(event: str, job: dict) -> None:
         if err:
             msg += f"\n原因：{err[:180]}"
 
-    try:
-        subprocess.run(
-            [
-                "openclaw",
-                "message",
-                "send",
-                "--channel",
-                "discord",
-                "--target",
-                channel_id,
-                "--message",
-                msg,
-            ],
-            cwd=str(ROOT_DIR),
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=20,
-        )
-    except Exception:
-        pass
+    _send_main_message(msg)
+
+
+def _notify_running_heartbeat(path: Path) -> None:
+    interval = max(30, int(os.getenv("ORCH_MAIN_HEARTBEAT_SECONDS", str(DEFAULT_MAIN_HEARTBEAT_SECONDS))))
+    now = int(time.time())
+    fresh = read_json(path)
+    if fresh.get("status") != "running":
+        return
+    last_ts = int(fresh.get("last_main_heartbeat_ts", 0) or 0)
+    if last_ts and (now - last_ts) < interval:
+        return
+
+    progress = _find_run_progress(str(fresh.get("goal", "")))
+    run_id = progress.get("run_id") or (fresh.get("audit") or {}).get("run_id") or "-"
+    done = progress.get("done", "-")
+    total = progress.get("total", "-")
+    running = progress.get("running", 0)
+    failed = progress.get("failed", 0)
+    waiting = progress.get("waiting", 0)
+
+    msg = f"{MENTION_PREFIX} ⏱️ 执行中 | job={fresh.get('job_id')} | run={run_id} | done={done}/{total}"
+    if isinstance(running, int) and running > 0:
+        msg += f" | running={running}"
+    if isinstance(waiting, int) and waiting > 0:
+        msg += f" | waiting={waiting}"
+    if isinstance(failed, int) and failed > 0:
+        msg += f" | failed={failed}"
+    _send_main_message(msg)
+
+    latest = read_json(path)
+    latest["last_main_heartbeat_ts"] = now
+    latest["updated_at"] = utc_now()
+    atomic_write_json(path, latest)
 
 
 def _notify_once(event: str, job: dict, path: Path) -> None:
@@ -180,6 +292,7 @@ def _process_job(path: Path, timeout_seconds: int) -> None:
             fresh["heartbeat_at"] = utc_now()
             fresh["updated_at"] = utc_now()
             atomic_write_json(path, fresh)
+            _notify_running_heartbeat(path)
 
         try:
             result = _run_goal_subprocess(
