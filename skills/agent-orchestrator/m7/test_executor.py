@@ -63,6 +63,14 @@ class FakeAdapter:
         return []
 
 
+class FakeStateStore:
+    def __init__(self):
+        self.updates = []
+
+    def update(self, task_id, status, error=None):
+        self.updates.append((task_id, status, error))
+
+
 def test_parse_messages_markers():
     msgs = [
         {"role": "assistant", "content": "ok [TASK_DONE]"},
@@ -85,7 +93,8 @@ def test_executor_done_flow():
         [{"role": "assistant", "content": "[TASK_DONE]"}],
     ])
     watcher = SessionWatcher(adapter)
-    executor = Executor(scheduler, adapter, watcher)
+    store = FakeStateStore()
+    executor = Executor(scheduler, adapter, watcher, state_store=store)
 
     tasks_by_id = {"t1": {"id": "t1", "title": "Task One"}}
     result = executor.run(tasks_by_id)
@@ -93,6 +102,7 @@ def test_executor_done_flow():
     assert result == {"status": "finished", "waiting": {}}
     assert scheduler.started == ["t1"]
     assert scheduler.finished == [("t1", True)]
+    assert store.updates == [("t1", "running", None), ("t1", "completed", None)]
     assert "[TASK_DONE]" in adapter.sent_prompts[0]
     assert "[TASK_FAILED]" in adapter.sent_prompts[0]
     assert "[TASK_WAITING]" in adapter.sent_prompts[0]
@@ -105,7 +115,8 @@ def test_executor_waiting_flow():
         [{"role": "assistant", "content": "[TASK_WAITING] provide repo url"}],
     ])
     watcher = SessionWatcher(adapter)
-    executor = Executor(scheduler, adapter, watcher)
+    store = FakeStateStore()
+    executor = Executor(scheduler, adapter, watcher, state_store=store)
 
     tasks_by_id = {"t1": {"id": "t1", "title": "Task One"}}
     result = executor.run(tasks_by_id)
@@ -113,6 +124,7 @@ def test_executor_waiting_flow():
     assert result["status"] == "waiting"
     assert result["waiting"] == {"t1": "provide repo url"}
     assert scheduler.finished == []
+    assert store.updates == [("t1", "running", None), ("t1", "waiting_human", None)]
     print("✓ M7 executor waiting flow test passed")
 
 

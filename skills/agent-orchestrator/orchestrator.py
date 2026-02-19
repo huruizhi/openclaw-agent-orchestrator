@@ -13,6 +13,7 @@ Scheduler = None
 OpenClawSessionAdapter = None
 SessionWatcher = None
 Executor = None
+TaskStateStore = None
 
 
 class _AgentChannelNotifierPlaceholder:
@@ -48,6 +49,7 @@ def _load_runtime_modules() -> None:
     global OpenClawSessionAdapter
     global SessionWatcher
     global Executor
+    global TaskStateStore
     global AgentChannelNotifier
     global AsyncAgentNotifier
 
@@ -79,6 +81,10 @@ def _load_runtime_modules() -> None:
         from m7.executor import Executor as _Executor
 
         Executor = _Executor
+    if TaskStateStore is None:
+        from m4.state import TaskStateStore as _TaskStateStore
+
+        TaskStateStore = _TaskStateStore
     if getattr(AgentChannelNotifier, "__placeholder__", False) or getattr(
         AsyncAgentNotifier, "__placeholder__", False
     ):
@@ -393,7 +399,14 @@ def run_workflow(goal: str, base_url: str, api_key: str):
     adapter_timeout_seconds = int(os.getenv("OPENCLAW_AGENT_TIMEOUT_SECONDS", "600"))
     adapter = OpenClawSessionAdapter(base_url, api_key, timeout_seconds=adapter_timeout_seconds)
     watcher = SessionWatcher(adapter)
-    executor = Executor(scheduler, adapter, watcher, artifacts_dir=str(artifacts_dir))
+    task_state_store = TaskStateStore(workspace_paths.STATE_DIR / run_id, list(tasks_by_id.keys()))
+    executor = Executor(
+        scheduler,
+        adapter,
+        watcher,
+        artifacts_dir=str(artifacts_dir),
+        state_store=task_state_store,
+    )
     executor.notifier = notifier
     executor.run_id = run_id
 

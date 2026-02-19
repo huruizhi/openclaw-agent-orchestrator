@@ -17,6 +17,7 @@ setup_logging()
 logger = ExtraAdapter(get_logger(__name__), {"module": "M4"})
 
 
+VALID_STATES = {"pending", "running", "waiting_human", "completed", "failed"}
 TERMINAL_STATES = {"completed", "failed"}
 
 
@@ -38,6 +39,7 @@ class TaskStateStore:
 
     def __init__(self, run_dir: Path, task_ids: List[str]):
         self.run_dir = run_dir
+        self.run_dir.mkdir(parents=True, exist_ok=True)
         self.state_path = run_dir / "m4_state.json"
         self.events_path = run_dir / "m4_events.jsonl"
         self.task_ids = set(task_ids)
@@ -56,6 +58,8 @@ class TaskStateStore:
         """Update task status and record event."""
         if task_id not in self.task_ids:
             raise ValueError(f"Unknown task_id: {task_id}")
+        if status not in VALID_STATES:
+            raise ValueError(f"Unknown status: {status}")
 
         prev = self.state[task_id]["status"]
         if prev in TERMINAL_STATES and status not in TERMINAL_STATES:

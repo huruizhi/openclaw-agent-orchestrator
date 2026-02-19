@@ -6,10 +6,11 @@ from .parser import parse_messages
 
 
 class Executor:
-    def __init__(self, scheduler, adapter, watcher, artifacts_dir: str | None = None):
+    def __init__(self, scheduler, adapter, watcher, artifacts_dir: str | None = None, state_store=None):
         self.scheduler = scheduler
         self.adapter = adapter
         self.watcher = watcher
+        self.state_store = state_store
         self.task_to_session: dict[str, str] = {}
         self.session_to_task: dict[str, str] = {}
         self.waiting_tasks: dict[str, str] = {}
@@ -17,6 +18,11 @@ class Executor:
         self.run_id = ""
         self.artifacts_dir = Path(artifacts_dir or os.getenv("ORCH_ARTIFACTS_DIR", "./workspace/artifacts"))
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    def _set_task_state(self, task_id: str, status: str, error: str | None = None) -> None:
+        if self.state_store is None:
+            return
+        self.state_store.update(task_id, status, error=error)
 
     def _notify(self, tasks_by_id: dict, task_id: str, event: str, **extra) -> None:
         notifier = self.notifier
@@ -121,7 +127,9 @@ class Executor:
                         # Dispatch failure should fail the task fast (no global hang).
                         self.adapter.mark_session_idle(session)
                         self.scheduler.start_task(task_id)
+                        self._set_task_state(task_id, "running")
                         self.scheduler.finish_task(task_id, False)
+                        self._set_task_state(task_id, "failed", error=f"dispatch failed: {e}")
                         self._notify(
                             tasks_by_id,
                             task_id,
@@ -133,6 +141,7 @@ class Executor:
                         continue
 
                     self.scheduler.start_task(task_id)
+                    self._set_task_state(task_id, "running")
                     self._notify(tasks_by_id, task_id, "task_dispatched")
 
                     self.watcher.watch(session)
@@ -157,6 +166,7 @@ class Executor:
                         ok, missing = self._validate_task_outputs(task)
                         if not ok:
                             self.scheduler.finish_task(task_id, False)
+                            self._set_task_state(task_id, "failed", error=f"missing outputs: {', '.join(missing)}")
                             self._notify(
                                 tasks_by_id,
                                 task_id,
@@ -165,6 +175,7 @@ class Executor:
                             )
                         else:
                             self.scheduler.finish_task(task_id, True)
+                            self._set_task_state(task_id, "completed")
                             self._notify(tasks_by_id, task_id, "task_completed")
 
                         self.adapter.mark_session_idle(session)
@@ -178,6 +189,7 @@ class Executor:
 
                     if result["type"] == "failed":
                         self.scheduler.finish_task(task_id, False)
+                        self._set_task_state(task_id, "failed")
                         self._notify(tasks_by_id, task_id, "task_failed")
                         self.adapter.mark_session_idle(session)
                         self.watcher.unwatch(session)
@@ -191,6 +203,7 @@ class Executor:
                     if result["type"] == "waiting":
                         question = result.get("question", "")
                         self.waiting_tasks[task_id] = question
+                        self._set_task_state(task_id, "waiting_human")
                         self._notify(
                             tasks_by_id,
                             task_id,
@@ -208,6 +221,7 @@ class Executor:
                 for task_id in running_tasks:
                     session = self.task_to_session.get(task_id)
                     self.scheduler.finish_task(task_id, False)
+                    self._set_task_state(task_id, "failed", error=f"idle timeout after {idle_timeout_seconds}s")
                     self._notify(
                         tasks_by_id,
                         task_id,
