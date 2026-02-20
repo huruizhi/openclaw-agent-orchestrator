@@ -384,18 +384,36 @@ def run_workflow(goal: str, base_url: str, api_key: str):
         report_path = _persist_run_report(run_id, report)
         preview_tasks = report.get("tasks", [])[:5]
         preview_lines = [f"- {t.get('title','')} => {t.get('agent','main')}" for t in preview_tasks]
-        preview_text = "\n".join(preview_lines)
+        preview_text = "\n".join(preview_lines) or "- (no preview tasks)"
+        job_id = str(os.getenv("ORCH_JOB_ID", "")).strip() or "-"
+        impact_scope = f"{len(report.get('tasks', []))} tasks / project={project_id}"
+        risk_items = "未经审批执行可能导致外发消息、文件变更或环境变更"
+        cmd_preview = "python3 scripts/control.py approve <job_id> | python3 scripts/control.py revise <job_id> \"<意见>\""
+        audit_message = (
+            "【AUDIT_GATE】\n"
+            f"1) status: awaiting_audit\n"
+            f"2) job_id/run_id: {job_id} / {run_id}\n"
+            f"3) 变更目标: {goal}\n"
+            f"4) 影响范围: {impact_scope}\n"
+            f"5) 风险项: {risk_items}\n"
+            f"6) 执行命令预览: {cmd_preview}\n"
+            "7) 用户审批指令: 回复“同意”或“拒绝 + 条件”\n"
+            "---\n"
+            "tasks preview:\n"
+            f"{preview_text}"
+        )
         notifier.notify(
             "main",
             "workflow_awaiting_audit",
             {
                 "run_id": run_id,
+                "job_id": job_id,
                 "project_id": project_id,
-                "message": (
-                    f"workflow awaiting audit: {run_id}\n"
-                    f"tasks={len(report.get('tasks', []))}\n"
-                    f"{preview_text}"
-                ),
+                "goal": goal,
+                "impact_scope": impact_scope,
+                "risk_items": risk_items,
+                "command_preview": cmd_preview,
+                "message": audit_message,
                 "audit_state_path": audit_state_path,
                 "report_path": report_path,
                 "tasks_preview": preview_tasks,

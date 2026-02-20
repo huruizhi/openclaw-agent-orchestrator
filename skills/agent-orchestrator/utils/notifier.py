@@ -305,6 +305,7 @@ class AgentChannelNotifier:
             components = None
             if event == "workflow_awaiting_audit":
                 run_id = str(payload.get("run_id") or "").strip()
+                job_id = str(payload.get("job_id") or "").strip() or "<job_id>"
                 # Discord buttons are for quick action guidance; user click acknowledges and then reply with command.
                 components = {
                     "text": "快速操作",
@@ -312,13 +313,18 @@ class AgentChannelNotifier:
                     "blocks": [
                         {
                             "type": "section",
-                            "text": f"run_id: {run_id}\n点击按钮后请直接回复：\n- 批准 {run_id}\n- 修改 {run_id} <意见>",
+                            "text": (
+                                f"job_id/run_id: {job_id} / {run_id}\n"
+                                "点击按钮后请直接回复：\n"
+                                f"- 同意（approve {job_id}）\n"
+                                f"- 拒绝 + 条件（revise {job_id} <意见>）"
+                            ),
                         },
                         {
                             "type": "actions",
                             "buttons": [
-                                {"label": "✅ 批准执行", "style": "success"},
-                                {"label": "✏️ 要求修改", "style": "secondary"},
+                                {"label": "✅ 同意执行", "style": "success"},
+                                {"label": "✏️ 拒绝并给条件", "style": "secondary"},
                             ],
                         },
                     ],
