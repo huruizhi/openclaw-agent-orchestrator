@@ -6,68 +6,41 @@ import subprocess
 import sys
 from pathlib import Path
 
-from queue_lib import atomic_write_json, jobs_dir, load_env, new_job, read_json
+from state_store import StateStore, load_env
 import worker
 
 
-def _setup_env(tmp_path: Path):
+def _setup_env(tmp_path: Path, project_id: str = "test_project") -> str:
     os.environ["BASE_PATH"] = str(tmp_path)
-    os.environ["ORCH_AUTH_ENABLED"] = "1"
-    os.environ["ORCH_CONTROL_TOKEN"] = "t"
+    os.environ["PROJECT_ID"] = project_id
     load_env()
+    return project_id
 
 
 def test_submit_audit_approve_complete_flow(tmp_path, monkeypatch):
-    _setup_env(tmp_path)
+    project_id = _setup_env(tmp_path, "flow_project")
+    store = StateStore(project_id)
+    job = store.submit_job("demo goal")
+    job_id = job["job_id"]
 
-    job = new_job("demo goal")
-    path = jobs_dir() / f"{job['job_id']}.json"
-    atomic_write_json(path, job)
-
-    # queued -> planning -> awaiting_audit
+    # queued/planning -> awaiting_audit
     monkeypatch.setattr(
         worker,
         "_run_goal_subprocess",
-        lambda goal, job_id, audit_gate=True, timeout_seconds=300, heartbeat_cb=None: {
+        lambda goal, audit_gate, timeout_seconds, heartbeat_cb=None, job_id=None, run_id_hint=None: {
             "status": "awaiting_audit",
             "run_id": "run_a",
             "orchestration": {"summary": {"done": 0, "total_tasks": 1}},
         },
     )
-    worker._process_job(path, timeout_seconds=60)
-    s1 = read_json(path)
+    worker._execute_job(store, job_id, "worker-test", 60)
+    s1 = store.get_job_snapshot(job_id)
     assert s1["status"] == "awaiting_audit"
 
-    # simulate approve action
-    s1["status"] = "approved"
-    atomic_write_json(path, s1)
-
-    # approved -> running -> completed
-    monkeypatch.setattr(
-        worker,
-        "_run_goal_subprocess",
-        lambda goal, job_id, audit_gate=True, timeout_seconds=300, heartbeat_cb=None: {
-            "status": "finished",
-            "run_id": "run_a",
-            "orchestration": {"summary": {"done": 1, "total_tasks": 1}},
-        },
-    )
-    worker._process_job(path, timeout_seconds=60)
-    s2 = read_json(path)
-    assert s2["status"] == "completed"
-
-
-def test_waiting_human_resume_flow(tmp_path):
-    _setup_env(tmp_path)
-
-    job = new_job("need human")
-    job["status"] = "waiting_human"
-    path = jobs_dir() / f"{job['job_id']}.json"
-    atomic_write_json(path, job)
-
+    # approve via control CLI
     control_py = Path(__file__).resolve().parent / "control.py"
     cp = subprocess.run(
-        [sys.executable, str(control_py), "--token", "t", "resume", job["job_id"], "approved by human"],
+        [sys.executable, str(control_py), "--project-id", project_id, "approve", job_id],
         text=True,
         capture_output=True,
         check=False,
@@ -75,10 +48,50 @@ def test_waiting_human_resume_flow(tmp_path):
     )
     assert cp.returncode == 0, cp.stdout + cp.stderr
 
-    updated = read_json(path)
-    assert updated["status"] == "approved"
+    # approved -> running -> completed
+    monkeypatch.setattr(
+        worker,
+        "_run_goal_subprocess",
+        lambda goal, audit_gate, timeout_seconds, heartbeat_cb=None, job_id=None, run_id_hint=None: {
+            "status": "finished",
+            "run_id": "run_a",
+            "orchestration": {"summary": {"done": 1, "total_tasks": 1}},
+        },
+    )
+    worker._execute_job(store, job_id, "worker-test", 60)
+    s2 = store.get_job_snapshot(job_id)
+    assert s2["status"] == "completed"
 
-    audit_file = jobs_dir().parent / "audit" / "audit_events.jsonl"
-    assert audit_file.exists()
-    lines = [json.loads(x) for x in audit_file.read_text(encoding="utf-8").splitlines() if x.strip()]
-    assert any(e.get("action") == "resume" and e.get("job_id") == job["job_id"] for e in lines)
+
+def test_waiting_human_resume_flow(tmp_path):
+    project_id = _setup_env(tmp_path, "resume_project")
+    store = StateStore(project_id)
+    job = store.submit_job("need human")
+    job_id = job["job_id"]
+
+    store.update_job(
+        job_id,
+        status="waiting_human",
+        audit_passed=1,
+        run_id="run_w",
+        last_result=json.dumps({"status": "waiting_human", "run_id": "run_w", "waiting": {"q1": "approve?"}}, ensure_ascii=False),
+    )
+
+    control_py = Path(__file__).resolve().parent / "control.py"
+    cp = subprocess.run(
+        [sys.executable, str(control_py), "--project-id", project_id, "resume", job_id, "approved by human"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=os.environ.copy(),
+    )
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+
+    updated = store.get_job_snapshot(job_id)
+    assert updated["status"] == "approved"
+    assert (updated.get("human_inputs") or [])
+
+    events = updated.get("events") or []
+    names = [e.get("event") for e in events]
+    assert "answer_consumed" in names
+    assert "job_resumed" in names
