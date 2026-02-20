@@ -11,6 +11,8 @@ _AGENTS = None
 
 # Hard routing rules: highest priority, deterministic.
 _HARD_RULES = [
+    # Intent-first writing rule to prevent "code-topic article" hijack.
+    ("techwriter", ["写一篇", "撰写", "写文章", "文档", "博客", "总结", "润色", "翻译", "write", "article", "documentation"]),
     ("work", ["email", "smtp", "himalaya", "邮件", "邮箱", "发送邮件"]),
     ("code", ["code", "coding", "refactor", "debug", "bugfix", "编码", "代码", "重构", "调试", "修复"]),
     ("test", ["test", "testing", "qa", "cases", "测试", "验收", "用例", "验证"]),
