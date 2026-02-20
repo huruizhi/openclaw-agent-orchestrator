@@ -228,3 +228,11 @@ The goal: Be helpful without being annoying. Check in a few times a day, do usef
 ## Make It Yours
 
 This is a starting point. Add your own conventions, style, and rules as you figure out what works.
+
+## 🔒 Critical Config Guardrail (openclaw.json)
+
+- `/home/ubuntu/.openclaw/openclaw.json` **只能由 main agent 修改**。
+- 非 main agent：禁止直接或间接修改该文件（包括 `write/edit/exec/sed/cp/mv` 等任何方式）。
+- 即便是 main agent，在修改前也必须进入 `awaiting_audit`，明确向用户说明变更内容与影响，并获得用户当次明确同意后才能执行。
+- 未获得明确同意时，只允许读取与提出变更计划，不允许落地写入。
+
