@@ -376,15 +376,23 @@ def run_workflow(goal: str, base_url: str, api_key: str):
             started_at=started_at,
         )
         report_path = _persist_run_report(run_id, report)
+        preview_tasks = report.get("tasks", [])[:5]
+        preview_lines = [f"- {t.get('title','')} => {t.get('agent','main')}" for t in preview_tasks]
+        preview_text = "\n".join(preview_lines)
         notifier.notify(
             "main",
             "workflow_awaiting_audit",
             {
                 "run_id": run_id,
                 "project_id": project_id,
-                "message": f"workflow awaiting audit: {run_id}",
+                "message": (
+                    f"workflow awaiting audit: {run_id}\n"
+                    f"tasks={len(report.get('tasks', []))}\n"
+                    f"{preview_text}"
+                ),
                 "audit_state_path": audit_state_path,
                 "report_path": report_path,
+                "tasks_preview": preview_tasks,
             },
         )
         return {
