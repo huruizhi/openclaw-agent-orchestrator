@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-GLOBAL_ENV_PATH = Path('/home/ubuntu/.openclaw/.env')
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
@@ -74,8 +73,6 @@ def _ensure_env_loaded() -> int:
     if not env_path.exists():
         print("[runner][FAIL] .env not found. Run: cp .env.example .env", file=sys.stderr)
         return 1
-    # Load global shared env first, then local env.
-    _load_env_file(GLOBAL_ENV_PATH)
     _load_env_file(env_path)
     return 0
 
@@ -134,7 +131,6 @@ def _find_run_paths(run_id: str) -> tuple[Path | None, Path | None]:
 
 def cmd_status(args: argparse.Namespace) -> int:
     env_path = ROOT_DIR / ".env"
-    _load_env_file(GLOBAL_ENV_PATH)
     _load_env_file(env_path)
 
     report_path, state_path = _find_run_paths(args.run_id)
