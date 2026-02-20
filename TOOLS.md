@@ -48,6 +48,10 @@ Skills are shared. Your setup is yours. Keeping them apart means you can update 
 
 ---
 
+### 术语与简称约定
+
+- `orch` = `agent-orchestrator` skill（推荐简称，后续默认用这个）
+
 ### Agent 路由能力
 
 | Agent | 特殊能力 |
