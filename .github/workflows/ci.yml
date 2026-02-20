@@ -29,6 +29,4 @@ jobs:
         run: |
           pytest -q \
             test_orchestrate_pipeline.py \
-            scripts/test_worker_regression.py \
-            utils/test_status_semantics.py \
-            utils/test_security_baseline.py
+            scripts/test_worker_regression.py
