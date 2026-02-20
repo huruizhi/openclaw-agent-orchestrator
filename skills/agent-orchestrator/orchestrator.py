@@ -112,7 +112,12 @@ def _slugify_goal(goal: str, limit: int = 24) -> str:
 
 
 def _set_dynamic_project_id(goal: str, run_id: str) -> str:
-    project_id = f"{_slugify_goal(goal)}_{run_id}"
+    # Prefer stable project id per job to avoid directory forks across audit/execute phases.
+    job_id = os.getenv("ORCH_JOB_ID", "").strip()
+    if job_id:
+        project_id = f"{_slugify_goal(goal)}_{job_id}"
+    else:
+        project_id = f"{_slugify_goal(goal)}_{run_id}"
     os.environ["PROJECT_ID"] = project_id
 
     workspace_paths.PROJECT_ID = project_id
@@ -341,7 +346,8 @@ def _persist_audit_state(run_id: str, project_id: str, goal: str, tasks_dict: di
 
 def run_workflow(goal: str, base_url: str, api_key: str):
     started_at = datetime.now()
-    run_id = started_at.strftime("%Y%m%d_%H%M%S")
+    run_id_hint = os.getenv("ORCH_RUN_ID", "").strip()
+    run_id = run_id_hint or started_at.strftime("%Y%m%d_%H%M%S")
     project_id = _set_dynamic_project_id(goal, run_id)
     _load_runtime_modules()
     notifier = AsyncAgentNotifier(AgentChannelNotifier.from_env())

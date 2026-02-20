@@ -30,11 +30,23 @@ def _result_to_job_status(result: dict) -> str:
     return "completed"
 
 
-def _run_goal_subprocess(goal: str, audit_gate: bool, timeout_seconds: int, heartbeat_cb=None) -> dict:
+def _run_goal_subprocess(
+    goal: str,
+    audit_gate: bool,
+    timeout_seconds: int,
+    heartbeat_cb=None,
+    *,
+    job_id: str | None = None,
+    run_id_hint: str | None = None,
+) -> dict:
     env = os.environ.copy()
     env["ORCH_AUDIT_GATE"] = "1" if audit_gate else "0"
     if audit_gate:
         env["ORCH_AUDIT_DECISION"] = "pending"
+    if job_id:
+        env["ORCH_JOB_ID"] = str(job_id)
+    if run_id_hint:
+        env["ORCH_RUN_ID"] = str(run_id_hint)
     cmd = [sys.executable, "scripts/runner.py", "run", "--no-preflight", goal]
     proc = subprocess.Popen(cmd, cwd=str(ROOT_DIR), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     deadline = time.time() + max(30, timeout_seconds)
@@ -70,6 +82,7 @@ def _execute_job(store: StateStore, job_id: str, worker_id: str, timeout_seconds
     if not job:
         return
     status = str(job.get("status", "queued"))
+    prev_run: str | None = None
     if status in {"cancelled", "completed", "failed", "waiting_human"}:
         return
 
@@ -104,7 +117,14 @@ def _execute_job(store: StateStore, job_id: str, worker_id: str, timeout_seconds
         store.heartbeat(job_id, worker_id, runner_pid=(proc.pid if proc else None), lease_seconds=LEASE_SECONDS)
 
     try:
-        result = _run_goal_subprocess(job.get("goal", ""), audit_gate=audit_gate, timeout_seconds=timeout_seconds, heartbeat_cb=_hb)
+        result = _run_goal_subprocess(
+            job.get("goal", ""),
+            audit_gate=audit_gate,
+            timeout_seconds=timeout_seconds,
+            heartbeat_cb=_hb,
+            job_id=str(job.get("job_id") or job_id),
+            run_id_hint=(prev_run if (status == "approved" and prev_run) else None),
+        )
         new_status = _result_to_job_status(result)
         payload = {
             "status": new_status,

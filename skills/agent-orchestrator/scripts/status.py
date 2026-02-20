@@ -26,9 +26,17 @@ def _normalized_view(job: dict) -> dict:
     else:
         out["status_view"] = out.get("status")
 
-    if isinstance(lr, dict):
-        out["run_id"] = lr.get("run_id") or (out.get("audit") or {}).get("run_id")
+    # Prefer active run pointer from job row; fallback to last_result/audit snapshot.
+    active_run_id = out.get("run_id")
+    if not active_run_id and isinstance(lr, dict):
+        active_run_id = lr.get("run_id") or (out.get("audit") or {}).get("run_id")
+    out["run_id"] = active_run_id
+
+    if isinstance(lr, dict) and lr.get("run_id") == active_run_id:
         out["run_status"] = lr.get("status")
+    else:
+        # Avoid stale last_result snapshot masking active execution state.
+        out["run_status"] = out.get("status")
     if isinstance(human_inputs, list):
         out["human_input_count"] = len(human_inputs)
         out["last_human_input"] = human_inputs[-1] if human_inputs else None
