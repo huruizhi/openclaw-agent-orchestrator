@@ -113,14 +113,19 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def _find_run_paths(run_id: str) -> tuple[Path | None, Path | None]:
-    base_path, _ = _resolve_base_project_paths()
-    if not base_path.exists():
+    base_path, project_id = _resolve_base_project_paths()
+    project_path = base_path / project_id
+    if not project_path.exists():
         return None, None
 
-    report = next(base_path.glob(f"*/.orchestrator/runs/report_{run_id}.json"), None)
-    waiting = next(base_path.glob(f"*/.orchestrator/state/waiting_{run_id}.json"), None)
-    if waiting is None:
-        waiting = next(base_path.glob(f"*/.orchestrator/state/audit_{run_id}.json"), None)
+    report = project_path / ".orchestrator" / "runs" / f"report_{run_id}.json"
+    waiting = project_path / ".orchestrator" / "state" / f"waiting_{run_id}.json"
+    if not waiting.exists():
+        waiting = project_path / ".orchestrator" / "state" / f"audit_{run_id}.json"
+    if not report.exists():
+        report = None
+    if not waiting.exists():
+        waiting = None
     return report, waiting
 
 
@@ -146,10 +151,12 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def _find_audit_path(run_id: str) -> Path | None:
-    base_path, _ = _resolve_base_project_paths()
-    if not base_path.exists():
+    base_path, project_id = _resolve_base_project_paths()
+    project_path = base_path / project_id
+    if not project_path.exists():
         return None
-    return next(base_path.glob(f"*/.orchestrator/state/audit_{run_id}.json"), None)
+    path = project_path / ".orchestrator" / "state" / f"audit_{run_id}.json"
+    return path if path.exists() else None
 
 
 def cmd_audit(args: argparse.Namespace) -> int:

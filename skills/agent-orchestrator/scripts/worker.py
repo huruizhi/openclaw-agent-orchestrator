@@ -6,146 +6,15 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
-from queue_lib import load_env, jobs_dir, read_json, atomic_write_json, utc_now
+from state_store import LEASE_SECONDS, MAX_ATTEMPTS, STALE_TIMEOUT_SECONDS, StateStore, load_env
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
-
-
-def _notify_main(event: str, job: dict) -> None:
-    channel_id = os.getenv("ORCH_MAIN_CHANNEL_ID", "").strip()
-    if not channel_id:
-        return
-
-    icon_map = {
-        "awaiting_audit": "🧭",
-        "running": "▶️",
-        "waiting_human": "⏸️",
-        "completed": "✅",
-        "failed": "❌",
-    }
-    label_map = {
-        "awaiting_audit": "待审计",
-        "running": "执行中",
-        "waiting_human": "待补充",
-        "completed": "完成",
-        "failed": "失败",
-    }
-    icon = icon_map.get(event, "ℹ️")
-    label = label_map.get(event, event)
-
-    lr = job.get("last_result") or {}
-    run_id = lr.get("run_id") or (job.get("audit") or {}).get("run_id") or "-"
-    summary = ((lr.get("orchestration") or {}).get("summary") or {}) if isinstance(lr, dict) else {}
-    done = summary.get("done", "-")
-    total = summary.get("total_tasks", "-")
-
-    msg = f"{icon} {label} | job={job.get('job_id')} | run={run_id} | done={done}/{total}"
-    if event == "waiting_human":
-        waiting = lr.get("waiting") or {}
-        q = str(next(iter(waiting.values()), "")).strip()
-        if q:
-            msg += f"\n问题：{q[:160]}"
-    if event == "failed":
-        err = str(job.get("error", "")).strip()
-        if err:
-            msg += f"\n原因：{err[:180]}"
-
-    try:
-        subprocess.run(
-            [
-                "openclaw",
-                "message",
-                "send",
-                "--channel",
-                "discord",
-                "--target",
-                channel_id,
-                "--message",
-                msg,
-            ],
-            cwd=str(ROOT_DIR),
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=20,
-        )
-    except Exception:
-        pass
-
-
-def _notify_once(event: str, job: dict, path: Path) -> None:
-    # Avoid duplicate state notifications across worker passes.
-    marker = str(job.get("last_notified_status", "")).strip()
-    if marker == event:
-        return
-    _notify_main(event, job)
-    fresh = read_json(path)
-    fresh["last_notified_status"] = event
-    fresh["updated_at"] = utc_now()
-    atomic_write_json(path, fresh)
-
-
-def _run_goal_subprocess(
-    goal: str,
-    audit_gate: bool = True,
-    timeout_seconds: int = 300,
-    heartbeat_cb=None,
-) -> dict:
-    """Run orchestration in isolated subprocess with hard timeout + heartbeat callback."""
-    env = os.environ.copy()
-    env["ORCH_AUDIT_GATE"] = "1" if audit_gate else "0"
-    if audit_gate:
-        env["ORCH_AUDIT_DECISION"] = "pending"
-
-    cmd = [
-        sys.executable,
-        "scripts/runner.py",
-        "run",
-        "--no-preflight",
-        goal,
-    ]
-
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(ROOT_DIR),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-
-    deadline = time.time() + max(30, timeout_seconds)
-    while True:
-        if heartbeat_cb:
-            heartbeat_cb()
-        if time.time() > deadline:
-            proc.kill()
-            raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout_seconds)
-        try:
-            stdout, stderr = proc.communicate(timeout=2)
-            break
-        except subprocess.TimeoutExpired:
-            continue
-
-    if proc.returncode != 0:
-        err = (stderr or stdout or "").strip()
-        raise RuntimeError(err or f"runner failed with code {proc.returncode}")
-
-    lines = (stdout or "").splitlines()
-    for line in lines:
-        s = line.strip()
-        if s.startswith("{") and s.endswith("}"):
-            try:
-                return json.loads(s)
-            except Exception:
-                continue
-
-    raise RuntimeError("runner output missing result JSON")
 
 
 def _result_to_job_status(result: dict) -> str:
@@ -161,113 +30,178 @@ def _result_to_job_status(result: dict) -> str:
     return "completed"
 
 
-def _process_job(path: Path, timeout_seconds: int) -> None:
-    job = read_json(path)
+def _run_goal_subprocess(
+    goal: str,
+    audit_gate: bool,
+    timeout_seconds: int,
+    heartbeat_cb=None,
+    *,
+    job_id: str | None = None,
+    run_id_hint: str | None = None,
+) -> dict:
+    env = os.environ.copy()
+    env["ORCH_AUDIT_GATE"] = "1" if audit_gate else "0"
+    if audit_gate:
+        env["ORCH_AUDIT_DECISION"] = "pending"
+    if job_id:
+        env["ORCH_JOB_ID"] = str(job_id)
+    if run_id_hint:
+        env["ORCH_RUN_ID"] = str(run_id_hint)
+    cmd = [sys.executable, "scripts/runner.py", "run", "--no-preflight", goal]
+    proc = subprocess.Popen(cmd, cwd=str(ROOT_DIR), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    deadline = time.time() + max(30, timeout_seconds)
+
+    while True:
+        if heartbeat_cb:
+            heartbeat_cb(proc)
+        if time.time() > deadline:
+            proc.kill()
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout_seconds)
+        try:
+            stdout, stderr = proc.communicate(timeout=2)
+            break
+        except subprocess.TimeoutExpired:
+            continue
+
+    if proc.returncode != 0:
+        err = (stderr or stdout or "").strip()
+        raise RuntimeError(err or f"runner failed with code {proc.returncode}")
+
+    for line in (stdout or "").splitlines():
+        s = line.strip()
+        if s.startswith("{") and s.endswith("}"):
+            try:
+                return json.loads(s)
+            except Exception:
+                pass
+    raise RuntimeError("runner output missing result JSON")
+
+
+def _execute_job(store: StateStore, job_id: str, worker_id: str, timeout_seconds: int) -> None:
+    job = store.get_job_snapshot(job_id)
+    if not job:
+        return
     status = str(job.get("status", "queued"))
-
-    if status in {"cancelled", "completed", "failed", "waiting_human", "running"}:
+    prev_run: str | None = None
+    if status in {"cancelled", "completed", "failed", "waiting_human"}:
         return
 
-    if status in {"queued", "planning"}:
-        job["status"] = "planning"
-        job["updated_at"] = utc_now()
-        atomic_write_json(path, job)
+    if status in {"queued", "planning", "revise_requested"}:
+        store.update_job(job_id, status="planning")
+        store.add_event(job_id, "status_changed", payload={"status": "planning"})
+        audit_gate = True
+    elif status == "approved":
+        if not bool(job.get("audit_passed")):
+            store.update_job(job_id, status="awaiting_audit")
+            store.add_event(job_id, "audit_gate_blocked", payload={"reason": "audit_passed=false"})
+            return
 
-        def _hb():
-            fresh = read_json(path)
-            if fresh.get("status") in {"cancelled", "failed", "completed"}:
-                return
-            fresh["heartbeat_at"] = utc_now()
-            fresh["updated_at"] = utc_now()
-            atomic_write_json(path, fresh)
+        prev = job.get("last_result") or {}
+        prev_status = str(prev.get("status", "")).strip().lower() if isinstance(prev, dict) else ""
+        prev_run = str(job.get("run_id") or (job.get("audit") or {}).get("run_id") or "").strip() or None
 
-        try:
-            result = _run_goal_subprocess(
-                job["goal"],
-                audit_gate=True,
-                timeout_seconds=timeout_seconds,
-                heartbeat_cb=_hb,
-            )
-            job["last_result"] = result
-            job["status"] = _result_to_job_status(result)
-            if result.get("status") == "awaiting_audit":
-                job["audit"]["run_id"] = result.get("run_id")
-        except subprocess.TimeoutExpired:
-            job["status"] = "failed"
-            job["error"] = f"job timeout after {timeout_seconds}s"
-        except Exception as e:
-            job["status"] = "failed"
-            job["error"] = str(e)
-        job["updated_at"] = utc_now()
-        atomic_write_json(path, job)
-        if job["status"] in {"awaiting_audit", "waiting_human", "completed", "failed"}:
-            _notify_once(job["status"], job, path)
+        # Move to running and clear stale run pointer while new execution starts.
+        store.update_job(job_id, status="running", run_id=None)
+        store.add_event(job_id, "status_changed", payload={"status": "running"})
+        if prev_status == "waiting_human":
+            store.add_event(job_id, "task_resumed", run_id=prev_run, payload={"from": "waiting_human"})
+            store.add_event(job_id, "run_restarted_from_resume", run_id=prev_run, payload={"strategy": "rerun_with_resume_note"})
+        audit_gate = False
+    elif status == "running":
+        # Claimed recovered running job: execute in non-audit mode
+        audit_gate = False
+    else:
         return
 
-    if status == "approved":
-        job["status"] = "running"
-        job["updated_at"] = utc_now()
-        atomic_write_json(path, job)
-        _notify_once("running", job, path)
+    def _hb(proc=None):
+        store.heartbeat(job_id, worker_id, runner_pid=(proc.pid if proc else None), lease_seconds=LEASE_SECONDS)
 
-        def _hb():
-            fresh = read_json(path)
-            if fresh.get("status") in {"cancelled", "failed", "completed"}:
-                return
-            fresh["heartbeat_at"] = utc_now()
-            fresh["updated_at"] = utc_now()
-            atomic_write_json(path, fresh)
-
-        try:
-            result = _run_goal_subprocess(
-                job["goal"],
-                audit_gate=False,
-                timeout_seconds=timeout_seconds,
-                heartbeat_cb=_hb,
-            )
-            job["last_result"] = result
-            job["status"] = _result_to_job_status(result)
-        except subprocess.TimeoutExpired:
-            job["status"] = "failed"
-            job["error"] = f"job timeout after {timeout_seconds}s"
-        except Exception as e:
-            job["status"] = "failed"
-            job["error"] = str(e)
-        job["updated_at"] = utc_now()
-        atomic_write_json(path, job)
-        if job["status"] in {"waiting_human", "completed", "failed"}:
-            _notify_once(job["status"], job, path)
-        return
-
-    if status == "revise_requested":
-        revision = str(job.get("audit", {}).get("revision", "")).strip()
-        revised_goal = (
-            f"{job['goal']}\n\n[Audit Revision]\n{revision}\n"
-            "要求：只重做任务拆解与分配，输出审计计划，不执行任务。"
+    try:
+        result = _run_goal_subprocess(
+            job.get("goal", ""),
+            audit_gate=audit_gate,
+            timeout_seconds=timeout_seconds,
+            heartbeat_cb=_hb,
+            job_id=str(job.get("job_id") or job_id),
+            run_id_hint=(prev_run if (status == "approved" and prev_run) else None),
         )
-        job["goal"] = revised_goal
-        job["status"] = "planning"
-        job["updated_at"] = utc_now()
-        atomic_write_json(path, job)
-        return
+        new_status = _result_to_job_status(result)
+        payload = {
+            "status": new_status,
+            "last_result": json.dumps(result, ensure_ascii=False),
+            "run_id": result.get("run_id"),
+            "error": None,
+            "runner_pid": None,
+            "lease_until": None,
+        }
+        if new_status == "awaiting_audit":
+            payload["audit_decision"] = "pending"
+        store.update_job(job_id, **payload)
+        if result.get("run_id"):
+            store.set_run(
+                run_id=str(result.get("run_id")),
+                job_id=job_id,
+                status=new_status,
+                pid=None,
+                worker_id=worker_id,
+                lease_until=None,
+                heartbeat_at=None,
+            )
+            store.finish_run(str(result.get("run_id")), new_status)
+        store.add_event(job_id, "status_changed", run_id=result.get("run_id"), payload={"status": new_status})
+    except subprocess.TimeoutExpired:
+        cur = store.get_job_snapshot(job_id) or {}
+        attempts = int(cur.get("attempt_count") or 0) + 1
+        retryable = attempts < MAX_ATTEMPTS
+        store.update_job(
+            job_id,
+            attempt_count=attempts,
+            status=("approved" if retryable else "failed"),
+            error=f"job timeout after {timeout_seconds}s",
+            runner_pid=None,
+            lease_until=None,
+        )
+        store.add_event(job_id, "job_timeout", payload={"attempt_count": attempts, "retryable": retryable})
+    except Exception as e:
+        cur = store.get_job_snapshot(job_id) or {}
+        attempts = int(cur.get("attempt_count") or 0) + 1
+        retryable = attempts < MAX_ATTEMPTS
+        store.update_job(
+            job_id,
+            attempt_count=attempts,
+            status=("approved" if retryable else "failed"),
+            error=str(e),
+            runner_pid=None,
+            lease_until=None,
+        )
+        store.add_event(job_id, "job_failed", payload={"attempt_count": attempts, "retryable": retryable, "error": str(e)[:400]})
 
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Background worker for orchestrator queue")
+    p.add_argument("--project-id", help="project id for queue isolation")
     p.add_argument("--once", action="store_true", help="process one pass and exit")
     p.add_argument("--interval", type=float, default=2.0, help="poll interval seconds")
     p.add_argument("--job-timeout", type=int, default=int(os.getenv("ORCH_WORKER_JOB_TIMEOUT_SECONDS", "2400")), help="per-job hard timeout seconds")
+    p.add_argument("--max-concurrency", type=int, default=int(os.getenv("ORCH_AGENT_MAX_CONCURRENCY", "2")), help="max jobs processed in parallel per worker")
     args = p.parse_args()
 
     load_env()
+    worker_id = f"worker-{os.getpid()}"
+    store = StateStore(args.project_id)
 
     while True:
-        files = sorted(jobs_dir().glob("*.json"), key=lambda x: x.stat().st_mtime)
-        for f in files:
-            try:
-                _process_job(f, timeout_seconds=max(30, int(args.job_timeout)))
-            except Exception:
-                pass
+        store.recover_stale_jobs(stale_timeout=STALE_TIMEOUT_SECONDS)
+        claimed = store.claim_jobs(worker_id=worker_id, limit=max(1, int(args.max_concurrency)), lease_seconds=LEASE_SECONDS)
+
+        threads: list[threading.Thread] = []
+        for jid in claimed:
+            t = threading.Thread(target=_execute_job, args=(store, jid, worker_id, max(30, int(args.job_timeout))), daemon=False)
+            t.start()
+            threads.append(t)
+
+        for t in threads:
+            t.join()
 
         if args.once:
             break

@@ -35,14 +35,27 @@ def base_path() -> Path:
     return p
 
 
-def queue_root() -> Path:
-    p = base_path() / "_orchestrator_queue"
+def resolve_project_id(override: str | None = None) -> str:
+    if override and str(override).strip():
+        return str(override).strip()
+    return os.getenv("PROJECT_ID", "default_project").strip() or "default_project"
+
+
+def project_root(project_id: str | None = None) -> Path:
+    pid = resolve_project_id(project_id)
+    p = base_path() / pid
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def queue_root(project_id: str | None = None) -> Path:
+    p = project_root(project_id) / ".orchestrator" / "queue"
     (p / "jobs").mkdir(parents=True, exist_ok=True)
     return p
 
 
-def jobs_dir() -> Path:
-    return queue_root() / "jobs"
+def jobs_dir(project_id: str | None = None) -> Path:
+    return queue_root(project_id) / "jobs"
 
 
 def utc_now() -> str:
@@ -60,10 +73,12 @@ def read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def new_job(goal: str) -> dict[str, Any]:
+def new_job(goal: str, project_id: str | None = None) -> dict[str, Any]:
     jid = uuid.uuid4().hex[:16]
+    pid = resolve_project_id(project_id)
     return {
         "job_id": jid,
+        "project_id": pid,
         "goal": goal,
         "status": "queued",
         "created_at": utc_now(),

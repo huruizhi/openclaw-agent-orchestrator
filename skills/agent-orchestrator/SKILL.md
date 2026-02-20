@@ -5,254 +5,157 @@ description: Decompose a complex goal into dependency-aware tasks, assign tasks 
 
 # Agent Orchestrator
 
-Run one end-to-end workflow from a single goal:
-`decompose -> assign -> graph/schedule -> execute via OpenClaw sessions -> monitor -> summarize`.
+Run one workflow from a single goal:
+`decompose -> assign -> graph/schedule -> execute -> summarize`.
 
-## Output Contract (user-facing)
+## Minimal Workflow (Queue Mode)
 
-- Keep updates concise.
-- Always include:
-  - `run_id`
-  - `project_id`
-  - `status` (`finished | failed | waiting_human | error`)
-  - completed/failed counts
-  - blocking reason (if any)
-  - one concrete next action
-- Return full orchestration payload when requested, including:
-  - graph
-  - per-task status rows
-  - artifacts list
-  - `report_path` (`.orchestrator/runs/report_<run_id>.json`)
-
-## Preconditions
-
-1. Install dependencies:
+Queue files are project-isolated under:
+`BASE_PATH/<PROJECT_ID>/.orchestrator/queue/jobs/`.
+Use `PROJECT_ID` env or pass `--project-id` to queue scripts.
 
 ```bash
-python3 -m pip install -r requirements.txt
-```
-
-2. Ensure `.env` exists:
-
-```bash
-cp .env.example .env
-```
-
-3. Configure required runtime variables:
-
-- OpenClaw session execution:
-  - `OPENCLAW_API_BASE_URL`
-  - `OPENCLAW_API_KEY` (if gateway requires auth)
-- LLM decomposition + waiting-answer:
-  - `LLM_URL`
-  - `LLM_API_KEY`
-  - `LLM_MODEL` (optional)
-
-Read `CONFIG.md` for full config details.
-
-## Preflight (run before first orchestration)
-
-Preferred one-liner:
-
-```bash
-bash scripts/run_preflight.sh
-```
-
-Optional: auto-install dependencies first:
-
-```bash
-INSTALL_DEPS=1 bash scripts/run_preflight.sh
-```
-
-Optional: skip slow integration test for quick checks:
-
-```bash
-SKIP_INTEGRATION=1 bash scripts/run_preflight.sh
-```
-
-Manual equivalent:
-
-```bash
-python3 test_imports.py
-python3 m2/test_decompose.py
-python3 m6/test_scheduler.py
-python3 m7/test_executor.py
-```
-
-If any check fails, stop and fix before running production goals.
-
-## Run
-
-Preferred production entrypoint (Python runner, includes env checks, optional preflight, stable result output):
-
-```bash
-bash scripts/run_goal.sh "<goal>"
-# equivalent:
-python3 scripts/runner.py run "<goal>"
-```
-
-Audit gate (default ON):
-- First run returns `awaiting_audit` plan, no task execution.
-- Approve to execute:
-
-```bash
-bash scripts/audit_run.sh approve <run_id>
-# equivalent:
-python3 scripts/runner.py audit approve <run_id>
-```
-
-- Revise plan (2A: re-plan only, no execution):
-
-```bash
-bash scripts/audit_run.sh revise <run_id> "<revision feedback>"
-# equivalent:
-python3 scripts/runner.py audit revise <run_id> --revision "<revision feedback>"
-```
-
-- Query canonical run status (report/state from BASE_PATH):
-
-```bash
-bash scripts/run_status.sh <run_id>
-# equivalent:
-python3 scripts/runner.py status <run_id>
-```
-
-## Background Worker Queue (default: ONCE mode)
-
-Use queue mode to decouple orchestration lifecycle from chat/shell process lifecycle.
-
-### Default recommended flow (ONCE mode)
-
-Timeout policy (default):
-- Single task/dispatch timeout: `OPENCLAW_AGENT_TIMEOUT_SECONDS=600` (10 minutes)
-- Whole workflow/job timeout: `ORCH_WORKER_JOB_TIMEOUT_SECONDS=2400` (40 minutes)
-
-```bash
-# 1) Submit job
+# 1) submit
 python3 scripts/submit.py "<goal>"
 
-# 2) Process one worker pass (plan -> awaiting_audit)
+# 2) plan pass
 python3 scripts/worker.py --once
 
-# 3) Check job status
+# 3) inspect status
 python3 scripts/status.py <job_id>
 
-# 4) Approve or revise
+# 4) audit decision
 python3 scripts/control.py approve <job_id>
 # or
 python3 scripts/control.py revise <job_id> "<revision>"
 
-# 5) Process one worker pass again (execute after approve / re-plan after revise)
+# 5) execute pass
 python3 scripts/worker.py --once
 
-# 6) Check final status
+# 6) final status
 python3 scripts/status.py <job_id>
 ```
 
-### Optional continuous mode (advanced)
+## Common Decisions
 
-```bash
-python3 scripts/worker.py --interval 2
+- If `status=waiting_human`: use `python3 scripts/resume_from_chat.py <job_id> "job_id: <job_id>; <answer>"` (auto-resume + auto-worker).
+- If `status=running` with stale heartbeat: rerun worker once; stale running jobs auto-recover to `approved`.
+- If audit is pending: `python3 scripts/control.py approve <job_id>` or `python3 scripts/control.py revise <job_id> "<text>"`.
+
+### waiting_human 强制流程（新）
+
+当任务进入 `waiting_human`，必须按以下步骤执行，不允许跳步：
+
+1. 输出“暂停等待输入（非失败）”并附 `job_id`。
+2. 要求用户回复必须包含：`job_id: <id>`。
+3. 收到回复后，执行：
+   ```bash
+   python3 scripts/resume_from_chat.py <job_id> "job_id: <job_id>; <answer>"
+   ```
+4. `resume_from_chat.py` 会自动：
+   - 调用 `control.py resume`
+   - 调用 `worker.py --once`（失败自动重试 2 次）
+5. 回报新的 `status` 与 `summary`。
+
+固定参数（已确认）：
+- waiting 提醒延迟：15 分钟
+- worker 自动重试：2 次
+- 多任务场景：用户回复必须带 `job_id`
+
+## Output Contract
+
+- Always include `run_id`, `project_id`, `status`, completed/failed counts, blocker, next action.
+- Full payload on request: graph, task rows, artifacts, `report_path`.
+
+## Primary Commands
+
+- Submit: `python3 scripts/submit.py "<goal>"`
+- Worker once: `python3 scripts/worker.py --once`
+- Worker loop: `python3 scripts/worker.py --interval 2`
+- Status: `python3 scripts/status.py <job_id>`
+- Control: `python3 scripts/control.py {approve|revise|resume|cancel} ...`
+- Runner direct: `python3 scripts/runner.py run "<goal>"`
+
+## ⚠️ Audit Gate (审计门)
+
+**默认行为**：任务分解后必须经过人工审计批准才会执行。
+
+### 审计流程
+
+```
+decompose → [awaiting_audit] → approve/revise → execute
 ```
 
-Audit control commands:
+1. **提交任务后**，状态为 `awaiting_audit`
+2. **必须人工审核**任务分解结果
+3. **批准后才会执行**：
+   ```bash
+   python3 scripts/control.py approve <job_id>
+   ```
+4. **或修改任务**：
+   ```bash
+   python3 scripts/control.py revise <job_id> "<修改意见>"
+   ```
 
-```bash
-python3 scripts/control.py approve <job_id>
-python3 scripts/control.py revise <job_id> "<revision>"
-python3 scripts/control.py cancel <job_id>
+### 禁止绕过审计
+
+在执行时**不要**设置以下环境变量：
+```
+❌ ORCH_AUDIT_GATE=0
+❌ ORCH_AUDIT_DECISION=approve
 ```
 
-Useful modes:
+如果需要快速执行（跳过审计），必须**先向用户确认**。
 
-```bash
-# Quick run: keep preflight but skip integration test
-bash scripts/run_goal.sh --quick "<goal>"
+### 配置文件
 
-# Fastest run: skip preflight entirely
-bash scripts/run_goal.sh --no-preflight "<goal>"
-
-# Save result JSON to custom file
-bash scripts/run_goal.sh --output workspace/default_project/.orchestrator/runs/my-run.json "<goal>"
+审计配置在 `.env` 中：
+```
+ORCH_AUDIT_GATE=1           # 启用审计门（默认）
+# 不设置 ORCH_AUDIT_DECISION 以确保必须人工审核
 ```
 
-Direct entrypoint:
+## 🎯 Design Principles (设计原则)
 
-```bash
-python3 main.py --goal "<goal>"
+### 1. Main Agent 不介入失败任务
+
+**原则**：当 orchestrator 任务失败时，main agent **不应该手动介入修复**。
+
+**原因**：
+- 保持自动化流程的一致性
+- 让用户决定如何处理失败（重试/取消/接受）
+- 避免掩盖 orchestrator 的设计缺陷
+
+**正确行为**：
+```
+任务失败 → 汇报失败原因 → 等待用户决定
 ```
 
-The command prints final JSON to stdout, and `run_goal.sh` also persists it to a runs file.
+**错误行为**：
+```
+任务失败 → Main agent 手动 mv 文件/写代码 → 绕过验证
+```
 
-## Pipeline Stages
+**如果发现 orchestrator bug**：
+1. 记录问题（如路径验证不支持子目录）
+2. 修复 orchestrator 代码
+3. 不在运行时手动补救
 
-1. Decompose goal into task list (`m2`).
-2. Build dependency graph (`m3`).
-3. Assign task owners (`m5/agents.json`).
-4. Schedule runnable tasks (`m6`).
-5. Spawn and drive agent sessions (`m7`).
-6. Exchange artifacts via shared directory: `PROJECT_DIR/artifacts/`.
-7. Validate declared output files exist before marking task done.
-8. Apply retry/failure policy in executor.
-9. Emit channel notifications (`utils/notifier.py`).
+### 2. 失败任务处理
 
-## Production Rules
+当任务失败时：
+1. **汇报详情**：使用 `scripts/status.py <job_id>` 查看失败原因
+2. **用户选择**：
+   - 取消任务：`scripts/control.py cancel <job_id>`
+   - 接受部分结果：记录哪些成功、哪些失败
+   - 修复 bug 后重试（需要重新提交）
+3. **不手动修复产物**
 
-- Fail fast on missing critical env values.
-- Persist task/state artifacts under `.orchestrator/` only.
-- Exchange task outputs through `artifacts/` shared directory (cross-agent handoff).
-- Mark task complete only when declared `outputs` files exist in `artifacts/`.
-- Do not mutate task metadata manually during active runs.
-- If run is `waiting`, control behavior with `ORCH_WAITING_POLICY`:
-  - `human` (default): pause and persist waiting context to `.orchestrator/state/waiting_<run_id>.json`
-  - `fail`: fail fast, no auto-resume
-  - `auto`: LLM auto-resume (bounded by `ORCH_MAX_AUTO_RESUMES`, default `1`)
-- Enforce bounded runtime using timeouts:
-  - adapter timeout via `OPENCLAW_AGENT_TIMEOUT_SECONDS`
-  - LLM timeout via `LLM_TIMEOUT`
+## Where Details Live
 
-## Retry / Failure Policy
-
-- Retry only transient failures (network timeout, temporary API errors, rate limits).
-- Do not blind-retry deterministic failures (schema mismatch, missing required input, invalid config).
-- On terminal failure, return:
-  - failed task id/title
-  - root cause summary
-  - whether retry is safe
-  - recommended fix command/action
-
-## Notification Policy
-
-- Use notifier for task lifecycle events only.
-- Keep notification payload short and actionable.
-- Prefer agent-bound channels from `openclaw.json` bindings.
-- If channel mapping is missing, log warning and continue run (do not crash workflow).
-
-## Troubleshooting
-
-- Dependency/import: `python3 test_imports.py`
-- Decomposition quality/schema: `python3 m2/test_decompose.py`
-- Scheduler behavior: `python3 m6/test_scheduler.py`
-- Session execution: `python3 m7/test_executor.py`
-- End-to-end regression: `python3 test_orchestrate_pipeline.py`
-
-## References (load on demand)
-
-- `CONFIG.md` - environment and directory layout
-- `INSTALL.md` - dependency install and setup
-- `QUICKSTART.md` - quick usage examples
-- `schemas/task.schema.json` - task contract
-- `m5/agents.json` - available agents and capabilities
-- `utils/PATHS.md` - workspace/state path semantics
-- `utils/LOGGING.md` - logging conventions
-
-## Final Report Template
-
-- Goal: `<goal>`
-- Run: `<run_id>` / Project: `<project_id>`
-- Status: `<finished|failed|waiting>`
-- Completed: `<n>`
-- Failed: `<n>`
-- Blockers: `<none|summary>`
-- Key outputs: `<artifacts/messages>`
-- Next action: `<single concrete action>`
+- `QUICKSTART.md`: first run flow
+- `INSTALL.md`: dependency setup
+- `CONFIG.md`: env/config/runtime knobs
+- `OPERATIONS.md`: notifications, stale recovery, queue events logs, troubleshooting
+- `utils/PATHS.md`: path layout
+- `utils/LOGGING.md`: logging model

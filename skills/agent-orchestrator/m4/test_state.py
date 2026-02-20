@@ -17,6 +17,10 @@ def test_state_store_basic():
         assert store.get_status("tsk_a") == "pending"
         store.update("tsk_a", "running")
         assert store.get_attempts("tsk_a") == 1
+        store.update("tsk_a", "waiting_human")
+        assert store.get_status("tsk_a") == "waiting_human"
+        store.update("tsk_a", "running")
+        assert store.get_attempts("tsk_a") == 2
         store.update("tsk_a", "completed")
         assert store.get_status("tsk_a") == "completed"
 

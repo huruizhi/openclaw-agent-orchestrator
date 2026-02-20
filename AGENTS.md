@@ -208,6 +208,31 @@ Think of it like a human reviewing their journal and updating their mental model
 
 The goal: Be helpful without being annoying. Check in a few times a day, do useful background work, but respect quiet time.
 
+## Main Agent 运营规则（新增）
+
+你是主控 agent，职责是：**决策、编排、验收、风险控制**。
+
+### 编排硬规则
+
+1. `awaiting_audit`：必须暂停，等待用户明确审批。
+2. `waiting_human`：必须执行标准恢复链路（`resume_from_chat`），不得口头“继续”。
+3. 禁止 main 手工补产物（例如手动写文件伪装任务完成）。
+4. 任务失败时必须给：根因、影响、恢复方案。
+
+### 状态与验收
+
+- 对外汇报优先给：`status / run_id / done-failed-running`。
+- 存在状态分叉时，明确指出“job 状态”和“run 状态”。
+- 交付前必须说明：已完成项、未完成项、风险项。
+
 ## Make It Yours
 
 This is a starting point. Add your own conventions, style, and rules as you figure out what works.
+
+## 🔒 Critical Config Guardrail (openclaw.json)
+
+- `/home/ubuntu/.openclaw/openclaw.json` **只能由 main agent 修改**。
+- 非 main agent：禁止直接或间接修改该文件（包括 `write/edit/exec/sed/cp/mv` 等任何方式）。
+- 即便是 main agent，在修改前也必须进入 `awaiting_audit`，明确向用户说明变更内容与影响，并获得用户当次明确同意后才能执行。
+- 未获得明确同意时，只允许读取与提出变更计划，不允许落地写入。
+

@@ -13,7 +13,7 @@ import os
 import subprocess
 import urllib.request
 from pathlib import Path
-from queue import Queue, Full, Empty
+from queue import Queue, Full
 from threading import Thread
 from typing import Any, Dict, Optional, Tuple
 
@@ -22,6 +22,7 @@ from .logger import get_logger, setup_logging, ExtraAdapter
 
 setup_logging()
 logger = ExtraAdapter(get_logger(__name__), {"module": "NOTIFIER"})
+MENTION_PREFIX = "@rzhu"
 
 
 class AgentChannelNotifier:
@@ -146,6 +147,17 @@ class AgentChannelNotifier:
             return text
         return text[: limit - 1] + "…"
 
+    @staticmethod
+    def _with_mention(message: str) -> str:
+        text = str(message or "").strip()
+        if not text:
+            return MENTION_PREFIX
+        if text.startswith(MENTION_PREFIX):
+            # Normalize to put mention on its own line for reliable ping behavior.
+            rest = text[len(MENTION_PREFIX):].lstrip()
+            return MENTION_PREFIX if not rest else f"{MENTION_PREFIX}\n{rest}"
+        return f"{MENTION_PREFIX}\n{text}"
+
     @classmethod
     def _format_message(cls, event: str, payload: Dict[str, Any]) -> str:
         run_id = payload.get("run_id", "-")
@@ -160,20 +172,25 @@ class AgentChannelNotifier:
             output_brief = cls._short_text(", ".join(str(x) for x in outputs[:2]), 50)
 
         if event == "task_dispatched":
-            return f"🟢 开始 | task={task_id} | {title or '-'} | run={run_id}"
+            return cls._with_mention(f"🟢 开始 | task={task_id} | {title or '-'} | run={run_id}")
         if event == "task_completed":
             extra = f" | outputs={output_brief}" if output_brief else ""
-            return f"✅ 完成 | task={task_id} | {title or '-'} | run={run_id}{extra}"
+            return cls._with_mention(f"✅ 完成 | task={task_id} | {title or '-'} | run={run_id}{extra}")
         if event == "task_retry":
-            return f"🔁 重试 | task={task_id} | 第{attempts}次 | err={error or '-'}"
+            return cls._with_mention(f"🔁 重试 | task={task_id} | 第{attempts}次 | err={error or '-'}")
+        if event == "task_waiting":
+            question = cls._short_text(payload.get("question", ""), 120)
+            return cls._with_mention(f"⏸️ 待补充 | task={task_id} | {title or '-'} | 问题={question or '-'}")
         if event in {"task_failed", "task_ended_failed"}:
-            return f"❌ 失败 | task={task_id} | {title or '-'} | err={error or '-'}"
-        return json.dumps(payload, ensure_ascii=False)
+            return cls._with_mention(f"❌ 失败 | task={task_id} | {title or '-'} | err={error or '-'}")
+        return cls._with_mention(json.dumps(payload, ensure_ascii=False))
 
     @staticmethod
     def _severity_for_event(event: str) -> str:
         if event in {"task_failed", "task_ended_failed"}:
             return "error"
+        if event == "task_waiting":
+            return "warn"
         if event == "task_retry":
             return "warn"
         return "info"
@@ -186,11 +203,13 @@ class AgentChannelNotifier:
             return "✅ 任务完成"
         if event == "task_retry":
             return "🔁 任务重试"
+        if event == "task_waiting":
+            return "⏸️ 任务待补充"
         if event in {"task_failed", "task_ended_failed"}:
             return "❌ 任务失败"
         return "📣 任务通知"
 
-    def _send_discord_via_tool(self, channel_id: str, message: str) -> bool:
+    def _send_discord_via_tool(self, channel_id: str, message: str, components: dict | None = None) -> bool:
         cmd = [
             "openclaw",
             "message",
@@ -203,6 +222,8 @@ class AgentChannelNotifier:
             message,
             "--json",
         ]
+        if components:
+            cmd.extend(["--components", json.dumps(components, ensure_ascii=False)])
         try:
             cp = subprocess.run(
                 cmd,
@@ -279,9 +300,31 @@ class AgentChannelNotifier:
             )
             title = str(payload.get("notify_title") or channel.get("title") or self._title_for_event(event))
             job_name = str(payload.get("job_name") or payload.get("task_id") or "orchestrator")
-            message = str(payload.get("message") or self._format_message(event, payload))
+            message = self._with_mention(str(payload.get("message") or self._format_message(event, payload)))
 
-            ok = self._send_discord_via_tool(channel_id=channel_id, message=message)
+            components = None
+            if event == "workflow_awaiting_audit":
+                run_id = str(payload.get("run_id") or "").strip()
+                # Discord buttons are for quick action guidance; user click acknowledges and then reply with command.
+                components = {
+                    "text": "快速操作",
+                    "reusable": True,
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": f"run_id: {run_id}\n点击按钮后请直接回复：\n- 批准 {run_id}\n- 修改 {run_id} <意见>",
+                        },
+                        {
+                            "type": "actions",
+                            "buttons": [
+                                {"label": "✅ 批准执行", "style": "success"},
+                                {"label": "✏️ 要求修改", "style": "secondary"},
+                            ],
+                        },
+                    ],
+                }
+
+            ok = self._send_discord_via_tool(channel_id=channel_id, message=message, components=components)
             if not ok:
                 logger.warning(
                     "Discord notify failed",
@@ -303,15 +346,12 @@ class AsyncAgentNotifier:
         self.notifier = notifier
         self.queue: "Queue[Optional[Tuple[str, str, Dict[str, Any]]]]" = Queue(maxsize=max_queue)
         self._worker = Thread(target=self._run, daemon=True)
-        self._running = True
+        self._closed = False
         self._worker.start()
 
     def _run(self):
-        while self._running:
-            try:
-                item = self.queue.get(timeout=0.2)
-            except Empty:
-                continue
+        while True:
+            item = self.queue.get()
             if item is None:
                 self.queue.task_done()
                 break
@@ -325,6 +365,8 @@ class AsyncAgentNotifier:
 
     def notify(self, agent: str, event: str, payload: Dict[str, Any]) -> bool:
         """Queue notification without blocking caller."""
+        if self._closed:
+            return False
         try:
             self.queue.put_nowait((agent, event, payload))
             return True
@@ -334,10 +376,15 @@ class AsyncAgentNotifier:
 
     def close(self, wait: bool = True, timeout_seconds: float = 10.0):
         """Flush and stop worker."""
-        self._running = False
+        if self._closed:
+            return
+        self._closed = True
+        if wait:
+            # Block until queue can accept sentinel, guaranteeing prior items remain before it.
+            self.queue.put(None)
+            self._worker.join(timeout=timeout_seconds)
+            return
         try:
             self.queue.put_nowait(None)
         except Full:
             pass
-        if wait:
-            self._worker.join(timeout=timeout_seconds)

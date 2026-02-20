@@ -19,6 +19,16 @@ cp .env.example .env
 | `BASE_PATH` | No | `./workspace` | Base path for all operations |
 | `PROJECT_ID` | No | `default_project` | Project identifier |
 
+### Worker / Queue Runtime
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENCLAW_AGENT_TIMEOUT_SECONDS` | `600` | Single task dispatch timeout |
+| `ORCH_WORKER_JOB_TIMEOUT_SECONDS` | `2400` | Per-job hard timeout |
+| `ORCH_MAIN_HEARTBEAT_SECONDS` | `180` | Main channel progress heartbeat interval |
+| `ORCH_RUNNING_STALE_SECONDS` | `300` | Stale running detection / auto-recovery threshold |
+| `ORCH_HEARTBEAT_LOG_SECONDS` | `30` | Queue heartbeat event log interval |
+
 ### Example .env
 
 ```env
@@ -53,6 +63,10 @@ This allows multiple projects to coexist without interference:
 
 See `utils/PATHS.md` for detailed path documentation.
 
+Queue job metadata:
+- `BASE_PATH/<PROJECT_ID>/.orchestrator/queue/jobs/<job_id>.json`
+- `BASE_PATH/<PROJECT_ID>/.orchestrator/queue/jobs/<job_id>.events.jsonl`
+
 ### Supported Providers
 
 **OpenRouter:**
@@ -84,3 +98,9 @@ LLM_MODEL=claude-3-opus-20240229
 ```
 
 > Note: Different providers may have different API formats. Current implementation uses OpenAI-compatible format.
+
+## Related Docs
+
+- Installation: `INSTALL.md`
+- Quick flow: `QUICKSTART.md`
+- Operations / recovery / notifications: `OPERATIONS.md`

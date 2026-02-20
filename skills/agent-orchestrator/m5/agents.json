@@ -7,8 +7,8 @@
     },
     {
       "name": "work",
-      "desc": "工作事务处理与技术支持辅助",
-      "capabilities": ["support", "analysis", "gitlab", "troubleshooting"]
+      "desc": "工作事务处理：邮件/收件箱、web_search 信息检索、工作安排与 Todo 管理",
+      "capabilities": ["support", "analysis", "gitlab", "troubleshooting", "email", "inbox", "mailbox", "himalaya", "smtp", "web_search", "search", "todo", "todo list", "task planning", "work planning", "工作安排", "待办", "收件箱", "发邮件"]
     },
     {
       "name": "enjoy",
@@ -22,18 +22,18 @@
     },
     {
       "name": "lab",
-      "desc": "实验性研究与方案探索",
-      "capabilities": ["research", "experiment", "ai", "architecture"]
+      "desc": "实验性研究与方案探索，可操作浏览器访问X和微信公众号",
+      "capabilities": ["research", "experiment", "ai", "architecture", "browser", "x", "twitter", "wechat", "公众号"]
     },
     {
       "name": "code",
-      "desc": "代码编写与工程实现",
-      "capabilities": ["coding", "refactor", "debug", "review"]
+      "desc": "代码实现、BUG 查找/修复与项目调试",
+      "capabilities": ["coding", "implementation", "bug", "bugfix", "debug", "troubleshooting code", "project debugging", "refactor", "review", "代码实现", "修复", "调试", "排错"]
     },
     {
       "name": "test",
-      "desc": "测试设计与验证",
-      "capabilities": ["testing", "validation", "qa", "cases"]
+      "desc": "测试用例编写与代码测试执行",
+      "capabilities": ["testing", "validation", "qa", "cases", "test case", "unit test", "integration test", "代码测试", "测试用例", "测试"]
     },
     {
       "name": "image",
@@ -43,4 +43,3 @@
   ],
   "default_agent": "main"
 }
-

@@ -13,6 +13,7 @@ Scheduler = None
 OpenClawSessionAdapter = None
 SessionWatcher = None
 Executor = None
+TaskStateStore = None
 
 
 class _AgentChannelNotifierPlaceholder:
@@ -48,6 +49,7 @@ def _load_runtime_modules() -> None:
     global OpenClawSessionAdapter
     global SessionWatcher
     global Executor
+    global TaskStateStore
     global AgentChannelNotifier
     global AsyncAgentNotifier
 
@@ -79,6 +81,10 @@ def _load_runtime_modules() -> None:
         from m7.executor import Executor as _Executor
 
         Executor = _Executor
+    if TaskStateStore is None:
+        from m4.state import TaskStateStore as _TaskStateStore
+
+        TaskStateStore = _TaskStateStore
     if getattr(AgentChannelNotifier, "__placeholder__", False) or getattr(
         AsyncAgentNotifier, "__placeholder__", False
     ):
@@ -106,7 +112,12 @@ def _slugify_goal(goal: str, limit: int = 24) -> str:
 
 
 def _set_dynamic_project_id(goal: str, run_id: str) -> str:
-    project_id = f"{_slugify_goal(goal)}_{run_id}"
+    # Prefer stable project id per job to avoid directory forks across audit/execute phases.
+    job_id = os.getenv("ORCH_JOB_ID", "").strip()
+    if job_id:
+        project_id = f"{_slugify_goal(goal)}_{job_id}"
+    else:
+        project_id = f"{_slugify_goal(goal)}_{run_id}"
     os.environ["PROJECT_ID"] = project_id
 
     workspace_paths.PROJECT_ID = project_id
@@ -335,7 +346,8 @@ def _persist_audit_state(run_id: str, project_id: str, goal: str, tasks_dict: di
 
 def run_workflow(goal: str, base_url: str, api_key: str):
     started_at = datetime.now()
-    run_id = started_at.strftime("%Y%m%d_%H%M%S")
+    run_id_hint = os.getenv("ORCH_RUN_ID", "").strip()
+    run_id = run_id_hint or started_at.strftime("%Y%m%d_%H%M%S")
     project_id = _set_dynamic_project_id(goal, run_id)
     _load_runtime_modules()
     notifier = AsyncAgentNotifier(AgentChannelNotifier.from_env())
@@ -370,15 +382,23 @@ def run_workflow(goal: str, base_url: str, api_key: str):
             started_at=started_at,
         )
         report_path = _persist_run_report(run_id, report)
+        preview_tasks = report.get("tasks", [])[:5]
+        preview_lines = [f"- {t.get('title','')} => {t.get('agent','main')}" for t in preview_tasks]
+        preview_text = "\n".join(preview_lines)
         notifier.notify(
             "main",
             "workflow_awaiting_audit",
             {
                 "run_id": run_id,
                 "project_id": project_id,
-                "message": f"workflow awaiting audit: {run_id}",
+                "message": (
+                    f"workflow awaiting audit: {run_id}\n"
+                    f"tasks={len(report.get('tasks', []))}\n"
+                    f"{preview_text}"
+                ),
                 "audit_state_path": audit_state_path,
                 "report_path": report_path,
+                "tasks_preview": preview_tasks,
             },
         )
         return {
@@ -393,7 +413,14 @@ def run_workflow(goal: str, base_url: str, api_key: str):
     adapter_timeout_seconds = int(os.getenv("OPENCLAW_AGENT_TIMEOUT_SECONDS", "600"))
     adapter = OpenClawSessionAdapter(base_url, api_key, timeout_seconds=adapter_timeout_seconds)
     watcher = SessionWatcher(adapter)
-    executor = Executor(scheduler, adapter, watcher, artifacts_dir=str(artifacts_dir))
+    task_state_store = TaskStateStore(workspace_paths.STATE_DIR / run_id, list(tasks_by_id.keys()))
+    executor = Executor(
+        scheduler,
+        adapter,
+        watcher,
+        artifacts_dir=str(artifacts_dir),
+        state_store=task_state_store,
+    )
     executor.notifier = notifier
     executor.run_id = run_id
 

@@ -6,10 +6,11 @@ from .parser import parse_messages
 
 
 class Executor:
-    def __init__(self, scheduler, adapter, watcher, artifacts_dir: str | None = None):
+    def __init__(self, scheduler, adapter, watcher, artifacts_dir: str | None = None, state_store=None):
         self.scheduler = scheduler
         self.adapter = adapter
         self.watcher = watcher
+        self.state_store = state_store
         self.task_to_session: dict[str, str] = {}
         self.session_to_task: dict[str, str] = {}
         self.waiting_tasks: dict[str, str] = {}
@@ -17,6 +18,19 @@ class Executor:
         self.run_id = ""
         self.artifacts_dir = Path(artifacts_dir or os.getenv("ORCH_ARTIFACTS_DIR", "./workspace/artifacts"))
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    def _set_task_state(self, task_id: str, status: str, error: str | None = None) -> None:
+        if self.state_store is None:
+            return
+        self.state_store.update(task_id, status, error=error)
+
+    def _release_task_session(self, task_id: str, session: str | None) -> None:
+        if session:
+            self.adapter.mark_session_idle(session)
+            self.watcher.unwatch(session)
+            self.session_to_task.pop(session, None)
+        self.task_to_session.pop(task_id, None)
+        self.waiting_tasks.pop(task_id, None)
 
     def _notify(self, tasks_by_id: dict, task_id: str, event: str, **extra) -> None:
         notifier = self.notifier
@@ -31,6 +45,8 @@ class Executor:
             **extra,
         }
         notifier.notify(agent, event, payload)
+        if event in {"task_failed", "task_waiting"} and agent != "main":
+            notifier.notify("main", event, {**payload, "source_agent": agent})
 
     def _build_task_prompt(self, task: dict) -> str:
         title = str(task.get("title", "")).strip()
@@ -113,33 +129,31 @@ class Executor:
 
                 if self.adapter.is_session_idle(session):
                     self.adapter.mark_session_busy(session)
+                    self.scheduler.start_task(task_id)
+                    self._set_task_state(task_id, "running")
+                    self._notify(tasks_by_id, task_id, "task_dispatched")
+                    self.watcher.watch(session)
+                    self.task_to_session[task_id] = session
+                    self.session_to_task[session] = task_id
+                    last_progress_at = time.monotonic()
 
                     prompt = self._build_task_prompt(tasks_by_id[task_id])
                     try:
                         self.adapter.send_message(session, prompt)
                     except Exception as e:
                         # Dispatch failure should fail the task fast (no global hang).
-                        self.adapter.mark_session_idle(session)
-                        self.scheduler.start_task(task_id)
                         self.scheduler.finish_task(task_id, False)
+                        self._set_task_state(task_id, "failed", error=f"dispatch failed: {e}")
                         self._notify(
                             tasks_by_id,
                             task_id,
                             "task_failed",
                             error=f"dispatch failed: {e}",
                         )
+                        self._release_task_session(task_id, session)
                         progressed = True
                         last_progress_at = time.monotonic()
                         continue
-
-                    self.scheduler.start_task(task_id)
-                    self._notify(tasks_by_id, task_id, "task_dispatched")
-
-                    self.watcher.watch(session)
-
-                    self.task_to_session[task_id] = session
-                    self.session_to_task[session] = task_id
-                    last_progress_at = time.monotonic()
 
             events = self.watcher.poll_events()
 
@@ -157,6 +171,7 @@ class Executor:
                         ok, missing = self._validate_task_outputs(task)
                         if not ok:
                             self.scheduler.finish_task(task_id, False)
+                            self._set_task_state(task_id, "failed", error=f"missing outputs: {', '.join(missing)}")
                             self._notify(
                                 tasks_by_id,
                                 task_id,
@@ -165,25 +180,19 @@ class Executor:
                             )
                         else:
                             self.scheduler.finish_task(task_id, True)
+                            self._set_task_state(task_id, "completed")
                             self._notify(tasks_by_id, task_id, "task_completed")
 
-                        self.adapter.mark_session_idle(session)
-                        self.watcher.unwatch(session)
-                        self.task_to_session.pop(task_id, None)
-                        self.session_to_task.pop(session, None)
-                        self.waiting_tasks.pop(task_id, None)
+                        self._release_task_session(task_id, session)
                         progressed = True
                         last_progress_at = time.monotonic()
                         break
 
                     if result["type"] == "failed":
                         self.scheduler.finish_task(task_id, False)
+                        self._set_task_state(task_id, "failed")
                         self._notify(tasks_by_id, task_id, "task_failed")
-                        self.adapter.mark_session_idle(session)
-                        self.watcher.unwatch(session)
-                        self.task_to_session.pop(task_id, None)
-                        self.session_to_task.pop(session, None)
-                        self.waiting_tasks.pop(task_id, None)
+                        self._release_task_session(task_id, session)
                         progressed = True
                         last_progress_at = time.monotonic()
                         break
@@ -191,6 +200,7 @@ class Executor:
                     if result["type"] == "waiting":
                         question = result.get("question", "")
                         self.waiting_tasks[task_id] = question
+                        self._set_task_state(task_id, "waiting_human")
                         self._notify(
                             tasks_by_id,
                             task_id,
@@ -208,18 +218,14 @@ class Executor:
                 for task_id in running_tasks:
                     session = self.task_to_session.get(task_id)
                     self.scheduler.finish_task(task_id, False)
+                    self._set_task_state(task_id, "failed", error=f"idle timeout after {idle_timeout_seconds}s")
                     self._notify(
                         tasks_by_id,
                         task_id,
                         "task_failed",
                         error=f"idle timeout after {idle_timeout_seconds}s",
                     )
-                    if session:
-                        self.adapter.mark_session_idle(session)
-                        self.watcher.unwatch(session)
-                        self.session_to_task.pop(session, None)
-                    self.task_to_session.pop(task_id, None)
-                    self.waiting_tasks.pop(task_id, None)
+                    self._release_task_session(task_id, session)
                 last_progress_at = time.monotonic()
 
         return {"status": "finished", "waiting": {}}
