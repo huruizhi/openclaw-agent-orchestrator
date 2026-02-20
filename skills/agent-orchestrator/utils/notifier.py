@@ -153,8 +153,10 @@ class AgentChannelNotifier:
         if not text:
             return MENTION_PREFIX
         if text.startswith(MENTION_PREFIX):
-            return text
-        return f"{MENTION_PREFIX} {text}"
+            # Normalize to put mention on its own line for reliable ping behavior.
+            rest = text[len(MENTION_PREFIX):].lstrip()
+            return MENTION_PREFIX if not rest else f"{MENTION_PREFIX}\n{rest}"
+        return f"{MENTION_PREFIX}\n{text}"
 
     @classmethod
     def _format_message(cls, event: str, payload: Dict[str, Any]) -> str:
