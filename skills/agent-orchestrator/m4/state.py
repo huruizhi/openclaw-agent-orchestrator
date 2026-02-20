@@ -17,8 +17,21 @@ setup_logging()
 logger = ExtraAdapter(get_logger(__name__), {"module": "M4"})
 
 
-VALID_STATES = {"pending", "running", "waiting_human", "completed", "failed"}
+# P1-04: converged status machine and transition guards
+VALID_STATES = {
+    "pending", "ready", "awaiting_audit", "approved", "running", "waiting_human", "completed", "failed"
+}
 TERMINAL_STATES = {"completed", "failed"}
+ALLOWED_TRANSITIONS = {
+    "pending": {"ready", "awaiting_audit", "running", "failed"},
+    "ready": {"awaiting_audit", "approved", "running", "failed"},
+    "awaiting_audit": {"approved", "failed"},
+    "approved": {"running", "failed"},
+    "running": {"waiting_human", "completed", "failed"},
+    "waiting_human": {"approved", "running", "failed"},
+    "completed": set(),
+    "failed": set(),
+}
 
 
 def init_task_states(tasks: List[dict]) -> Dict[str, dict]:
@@ -63,6 +76,8 @@ class TaskStateStore:
 
         prev = self.state[task_id]["status"]
         if prev in TERMINAL_STATES and status not in TERMINAL_STATES:
+            raise ValueError(f"Invalid transition: {prev} -> {status}")
+        if status != prev and status not in ALLOWED_TRANSITIONS.get(prev, set()):
             raise ValueError(f"Invalid transition: {prev} -> {status}")
 
         if status == "running":
