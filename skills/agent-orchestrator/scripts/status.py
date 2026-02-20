@@ -3,26 +3,33 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from queue_lib import load_env, jobs_dir, read_json
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from utils.status_semantics import compose_status
 
 
 def _normalized_view(job: dict) -> dict:
     out = dict(job)
     lr = out.get("last_result") or {}
-    if out.get("status") == "approved":
-        out["status_view"] = "approved_waiting_worker"
-    elif out.get("status") == "running":
-        out["status_view"] = "running"
-    elif out.get("status") == "waiting_human":
-        out["status_view"] = "waiting_human"
-    else:
-        out["status_view"] = out.get("status")
+    run_status_raw = str((lr.get("status") if isinstance(lr, dict) else "") or "queued")
+    job_status_raw = str(out.get("status") or "queued")
 
-    if isinstance(lr, dict):
-        out["run_id"] = lr.get("run_id") or (out.get("audit") or {}).get("run_id")
-        out["run_status"] = lr.get("status")
+    # map legacy names
+    if job_status_raw == "completed":
+        run_status_raw = run_status_raw if run_status_raw not in {"", "queued"} else "finished"
+
+    snapshot = compose_status(job_status_raw, run_status_raw)
+    out["job_status"] = snapshot.job_status
+    out["run_status"] = snapshot.run_status
+    out["status_view"] = snapshot.status_view
+    out["run_id"] = lr.get("run_id") or (out.get("audit") or {}).get("run_id")
     return out
 
 

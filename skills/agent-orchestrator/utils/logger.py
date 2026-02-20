@@ -18,8 +18,10 @@ from typing import Any, Dict, Iterator, Optional, Union
 
 try:
     from utils.paths import LOGS_DIR, PROJECT_ID, init_workspace
+    from utils.security import sanitize_payload
 except ImportError:
     from paths import LOGS_DIR, PROJECT_ID, init_workspace
+    from security import sanitize_payload
 
 
 class KwargLogger(logging.Logger):
@@ -88,7 +90,7 @@ class JSONFormatter(logging.Formatter):
         }
 
         if hasattr(record, "extra_fields"):
-            entry.update(record.extra_fields)
+            entry.update(sanitize_payload(record.extra_fields))
         elif hasattr(record, "task_id"):
             # Compatibility for plain logger calls using logging's `extra`.
             entry.update(
@@ -222,8 +224,8 @@ class StructuredLogger:
         entry = {
             "timestamp": datetime.now().isoformat(),
             "level": level,
-            "message": message,
-            **kwargs,
+            "message": sanitize_payload(message),
+            **sanitize_payload(kwargs),
         }
         with open(self.log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")

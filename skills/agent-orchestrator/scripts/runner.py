@@ -85,10 +85,10 @@ def _require_core_env() -> int:
     return 0
 
 
-def _run_goal(goal: str, output: str | None = None) -> int:
+def _run_goal(goal: str, output: str | None = None, job_id: str | None = None) -> int:
     from orchestrator import run_workflow_from_env  # imported after env load
 
-    result = run_workflow_from_env(goal)
+    result = run_workflow_from_env(goal, job_id=job_id)
     payload = json.dumps(result, ensure_ascii=False)
     print(payload)
 
@@ -109,7 +109,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not args.no_preflight:
         _run_preflight(skip_integration=args.quick)
 
-    return _run_goal(args.goal, output=args.output)
+    return _run_goal(args.goal, output=args.output, job_id=args.job_id)
 
 
 def _find_run_paths(run_id: str) -> tuple[Path | None, Path | None]:
@@ -174,7 +174,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
 
     if args.action == "approve":
         os.environ["ORCH_AUDIT_GATE"] = "0"
-        return _run_goal(goal)
+        return _run_goal(goal, job_id=os.getenv("ORCH_JOB_ID", "").strip() or None)
 
     revision = str(args.revision or "").strip()
     if not revision:
@@ -199,6 +199,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--no-preflight", action="store_true", help="skip preflight")
     p_run.add_argument("--quick", action="store_true", help="run preflight with SKIP_INTEGRATION=1")
     p_run.add_argument("--output", help="output JSON path")
+    p_run.add_argument("--job-id", help="fixed job_id used for deterministic project_id")
     p_run.set_defaults(func=cmd_run)
 
     p_status = sub.add_parser("status", help="query run status by run_id")

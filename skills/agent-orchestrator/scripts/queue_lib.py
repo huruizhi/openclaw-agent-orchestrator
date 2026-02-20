@@ -60,10 +60,19 @@ def read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _normalize_project_id(job_id: str) -> str:
+    s = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(job_id))
+    while "--" in s:
+        s = s.replace("--", "-")
+    s = s.strip("-")
+    return s or "default-job"
+
+
 def new_job(goal: str) -> dict[str, Any]:
     jid = uuid.uuid4().hex[:16]
     return {
         "job_id": jid,
+        "project_id": _normalize_project_id(jid),
         "goal": goal,
         "status": "queued",
         "created_at": utc_now(),

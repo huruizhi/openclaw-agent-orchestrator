@@ -92,6 +92,7 @@ def _notify_once(event: str, job: dict, path: Path) -> None:
 
 def _run_goal_subprocess(
     goal: str,
+    job_id: str,
     audit_gate: bool = True,
     timeout_seconds: int = 300,
     heartbeat_cb=None,
@@ -101,6 +102,7 @@ def _run_goal_subprocess(
     env["ORCH_AUDIT_GATE"] = "1" if audit_gate else "0"
     if audit_gate:
         env["ORCH_AUDIT_DECISION"] = "pending"
+    env["ORCH_JOB_ID"] = str(job_id)
 
     cmd = [
         sys.executable,
@@ -184,6 +186,7 @@ def _process_job(path: Path, timeout_seconds: int) -> None:
         try:
             result = _run_goal_subprocess(
                 job["goal"],
+                job_id=str(job.get("job_id") or ""),
                 audit_gate=True,
                 timeout_seconds=timeout_seconds,
                 heartbeat_cb=_hb,
@@ -221,6 +224,7 @@ def _process_job(path: Path, timeout_seconds: int) -> None:
         try:
             result = _run_goal_subprocess(
                 job["goal"],
+                job_id=str(job.get("job_id") or ""),
                 audit_gate=False,
                 timeout_seconds=timeout_seconds,
                 heartbeat_cb=_hb,

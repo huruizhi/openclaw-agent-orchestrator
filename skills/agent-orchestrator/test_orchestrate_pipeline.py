@@ -21,6 +21,7 @@ def test_run_workflow_entrypoint():
     old_async = orch_mod.AsyncAgentNotifier
     old_base = os.getenv("OPENCLAW_API_BASE_URL")
     old_key = os.getenv("OPENCLAW_API_KEY")
+    old_audit_gate = os.getenv("ORCH_AUDIT_GATE")
 
     class DummyNotifier:
         def notify(self, agent, event, payload):
@@ -54,7 +55,7 @@ def test_run_workflow_entrypoint():
     called = {"run_called": 0}
 
     class DummyExecutor:
-        def __init__(self, scheduler, adapter, watcher):
+        def __init__(self, scheduler, adapter, watcher, artifacts_dir=None):
             self.scheduler = scheduler
             self.adapter = adapter
             self.watcher = watcher
@@ -103,9 +104,12 @@ def test_run_workflow_entrypoint():
         orch_mod.AsyncAgentNotifier = DummyAsyncNotifier
         os.environ["OPENCLAW_API_BASE_URL"] = "http://127.0.0.1:18789"
         os.environ["OPENCLAW_API_KEY"] = "k"
+        os.environ["ORCH_AUDIT_GATE"] = "0"
 
-        result = orch_mod.run_workflow("demo goal", "http://127.0.0.1:18789", "k")
+        result = orch_mod.run_workflow("demo goal", "http://127.0.0.1:18789", "k", job_id="job_demo")
         assert result["status"] == "finished"
+        assert result["project_id"] == "job-demo"
+        assert result["status_view"] == "done"
         assert called["goal"] == "demo goal"
         assert called["run_called"] == 1
         print("✓ orchestrator entrypoint test passed")
@@ -127,6 +131,10 @@ def test_run_workflow_entrypoint():
             os.environ.pop("OPENCLAW_API_KEY", None)
         else:
             os.environ["OPENCLAW_API_KEY"] = old_key
+        if old_audit_gate is None:
+            os.environ.pop("ORCH_AUDIT_GATE", None)
+        else:
+            os.environ["ORCH_AUDIT_GATE"] = old_audit_gate
 
 
 if __name__ == "__main__":

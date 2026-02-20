@@ -5,6 +5,8 @@ from pathlib import Path
 from datetime import datetime
 
 from utils import paths as workspace_paths
+from utils.audit import append_audit_event
+from utils.status_semantics import compose_status
 
 decompose = None
 build_execution_graph = None
@@ -89,9 +91,9 @@ def _load_runtime_modules() -> None:
         AsyncAgentNotifier = _AsyncAgentNotifier
 
 
-def _slugify_goal(goal: str, limit: int = 24) -> str:
+def _normalize_job_id(job_id: str, limit: int = 64) -> str:
     cleaned = []
-    for ch in goal.lower():
+    for ch in (job_id or "").lower():
         if ("a" <= ch <= "z") or ("0" <= ch <= "9"):
             cleaned.append(ch)
         else:
@@ -101,12 +103,12 @@ def _slugify_goal(goal: str, limit: int = 24) -> str:
         slug = slug.replace("--", "-")
     slug = slug.strip("-")
     if not slug:
-        slug = "workflow"
-    return slug[:limit].rstrip("-") or "workflow"
+        slug = "default-job"
+    return slug[:limit].rstrip("-") or "default-job"
 
 
-def _set_dynamic_project_id(goal: str, run_id: str) -> str:
-    project_id = f"{_slugify_goal(goal)}_{run_id}"
+def _set_fixed_project_id(job_id: str) -> str:
+    project_id = _normalize_job_id(job_id)
     os.environ["PROJECT_ID"] = project_id
 
     workspace_paths.PROJECT_ID = project_id
@@ -268,6 +270,7 @@ def _list_artifacts(artifacts_dir: Path) -> list[str]:
 def _build_orchestration_report(
     *,
     run_id: str,
+    job_id: str,
     project_id: str,
     goal: str,
     result_status: str,
@@ -283,6 +286,7 @@ def _build_orchestration_report(
     task_rows = _build_task_status_rows(tasks_by_id, scheduler)
     report = {
         "run_id": run_id,
+        "job_id": job_id,
         "project_id": project_id,
         "goal": goal,
         "status": result_status,
@@ -333,12 +337,24 @@ def _persist_audit_state(run_id: str, project_id: str, goal: str, tasks_dict: di
     return str(path)
 
 
-def run_workflow(goal: str, base_url: str, api_key: str):
+def run_workflow(goal: str, base_url: str, api_key: str, job_id: str | None = None):
     started_at = datetime.now()
     run_id = started_at.strftime("%Y%m%d_%H%M%S")
-    project_id = _set_dynamic_project_id(goal, run_id)
+    normalized_job_id = _normalize_job_id(job_id or f"job-{goal[:16]}")
+    project_id = _set_fixed_project_id(normalized_job_id)
     _load_runtime_modules()
     notifier = AsyncAgentNotifier(AgentChannelNotifier.from_env())
+    audit_chain_path = workspace_paths.STATE_DIR / f"audit_chain_{run_id}.jsonl"
+    append_audit_event(
+        audit_chain_path,
+        job_id=normalized_job_id,
+        run_id=run_id,
+        action="run_start",
+        actor="system",
+        before_status="queued",
+        after_status="running",
+        reason="workflow started",
+    )
 
     tasks_dict = decompose(goal)
     tasks_dict = assign_agents(tasks_dict)
@@ -360,6 +376,7 @@ def run_workflow(goal: str, base_url: str, api_key: str):
         audit_state_path = _persist_audit_state(run_id, project_id, goal, tasks_dict, graph)
         report = _build_orchestration_report(
             run_id=run_id,
+            job_id=normalized_job_id,
             project_id=project_id,
             goal=goal,
             result_status="awaiting_audit",
@@ -370,6 +387,16 @@ def run_workflow(goal: str, base_url: str, api_key: str):
             started_at=started_at,
         )
         report_path = _persist_run_report(run_id, report)
+        append_audit_event(
+            audit_chain_path,
+            job_id=normalized_job_id,
+            run_id=run_id,
+            action="approve",
+            actor="audit_gate",
+            before_status="running",
+            after_status="awaiting_audit",
+            reason="audit gate pending",
+        )
         notifier.notify(
             "main",
             "workflow_awaiting_audit",
@@ -428,6 +455,7 @@ def run_workflow(goal: str, base_url: str, api_key: str):
                 )
                 report = _build_orchestration_report(
                     run_id=run_id,
+                    job_id=normalized_job_id,
                     project_id=project_id,
                     goal=goal,
                     result_status="waiting_human",
@@ -440,6 +468,16 @@ def run_workflow(goal: str, base_url: str, api_key: str):
                     waiting_state_path=waiting_state_path,
                 )
                 report_path = _persist_run_report(run_id, report)
+                append_audit_event(
+                    audit_chain_path,
+                    job_id=normalized_job_id,
+                    run_id=run_id,
+                    action="resume",
+                    actor="system",
+                    before_status="running",
+                    after_status="waiting_human",
+                    reason="task waiting for human input",
+                )
                 return {
                     "status": "waiting_human",
                     "run_id": run_id,
@@ -510,8 +548,12 @@ def run_workflow(goal: str, base_url: str, api_key: str):
             )
 
         final_status = str(result.get("status") or "finished")
+        job_status = "completed" if final_status in {"finished", "completed"} else "failed"
+        run_status = "finished" if final_status in {"finished", "completed"} else "failed"
+        status_snapshot = compose_status(job_status, run_status)
         report = _build_orchestration_report(
             run_id=run_id,
+            job_id=normalized_job_id,
             project_id=project_id,
             goal=goal,
             result_status=final_status,
@@ -523,10 +565,25 @@ def run_workflow(goal: str, base_url: str, api_key: str):
         )
         report_path = _persist_run_report(run_id, report)
 
+        append_audit_event(
+            audit_chain_path,
+            job_id=normalized_job_id,
+            run_id=run_id,
+            action="run_terminal",
+            actor="system",
+            before_status="running",
+            after_status=status_snapshot.job_status,
+            reason=f"workflow terminal status={final_status}",
+        )
         return {
             **result,
+            "job_id": normalized_job_id,
             "run_id": run_id,
             "project_id": project_id,
+            "job_status": status_snapshot.job_status,
+            "run_status": status_snapshot.run_status,
+            "status_view": status_snapshot.status_view,
+            "audit_chain_path": str(audit_chain_path),
             "report_path": report_path,
             "orchestration": report,
         }
@@ -541,9 +598,20 @@ def run_workflow(goal: str, base_url: str, api_key: str):
                 "message": f"workflow error: {e}",
             },
         )
+        append_audit_event(
+            audit_chain_path,
+            job_id=normalized_job_id,
+            run_id=run_id,
+            action="run_terminal",
+            actor="system",
+            before_status="running",
+            after_status="failed",
+            reason=str(e),
+        )
         try:
             report = _build_orchestration_report(
                 run_id=run_id,
+                job_id=normalized_job_id,
                 project_id=project_id,
                 goal=goal,
                 result_status="error",
@@ -562,7 +630,8 @@ def run_workflow(goal: str, base_url: str, api_key: str):
         notifier.close(wait=True)
 
 
-def run_workflow_from_env(goal: str):
+def run_workflow_from_env(goal: str, job_id: str | None = None):
     base_url = os.getenv("OPENCLAW_API_BASE_URL", "").strip()
     api_key = os.getenv("OPENCLAW_API_KEY", "").strip()
-    return run_workflow(goal, base_url, api_key)
+    effective_job_id = (job_id or os.getenv("ORCH_JOB_ID", "").strip() or None)
+    return run_workflow(goal, base_url, api_key, job_id=effective_job_id)
