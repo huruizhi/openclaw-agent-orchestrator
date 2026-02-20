@@ -2,9 +2,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 
-from queue_lib import load_env, jobs_dir, read_json, atomic_write_json, utc_now
+from state_store import StateStore, load_env, utc_now
+
+
+def _qhash(question: str) -> str:
+    q = " ".join((question or "").split())
+    return hashlib.sha1(q.encode("utf-8")).hexdigest()[:12]
 
 
 def main() -> int:
@@ -28,50 +34,33 @@ def main() -> int:
 
     args = p.parse_args()
     load_env()
+    store = StateStore(args.project_id)
+    job = store.get_job_snapshot(args.job_id)
 
-    path = jobs_dir(args.project_id) / f"{args.job_id}.json"
-    if not path.exists():
+    if not job:
         print(json.dumps({"job_id": args.job_id, "status": "not_found"}, ensure_ascii=False, indent=2))
         return 1
 
-    job = read_json(path)
+    status = job.get("status")
+    audit = job.get("audit") or {}
 
     if args.cmd == "approve":
-        job["audit"]["decision"] = "approve"
-        if job.get("status") in {"awaiting_audit", "queued"}:
-            job["status"] = "approved"
+        audit["decision"] = "approve"
+        if status in {"awaiting_audit", "queued"}:
+            status = "approved"
+        store.add_event(args.job_id, "audit_approved", payload={"at": utc_now()})
     elif args.cmd == "revise":
-        job["audit"]["decision"] = "revise"
-        job["audit"]["revision"] = args.revision
-        job["status"] = "revise_requested"
+        audit["decision"] = "revise"
+        audit["revision"] = args.revision
+        status = "revise_requested"
+        store.add_event(args.job_id, "audit_revise_requested", payload={"revision": args.revision})
     elif args.cmd == "resume":
-        if job.get("status") != "waiting_human":
-            print(
-                json.dumps(
-                    {
-                        "job_id": args.job_id,
-                        "status": "invalid_state",
-                        "message": f"resume only allowed from waiting_human, got={job.get('status')}",
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
+        if status != "waiting_human":
+            print(json.dumps({"job_id": args.job_id, "status": "invalid_state", "message": f"resume only allowed from waiting_human, got={status}"}, ensure_ascii=False, indent=2))
             return 1
-
         answer = str(args.answer or "").strip()
         if not answer:
-            print(
-                json.dumps(
-                    {
-                        "job_id": args.job_id,
-                        "status": "invalid_answer",
-                        "message": "resume answer cannot be empty",
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
+            print(json.dumps({"job_id": args.job_id, "status": "invalid_answer", "message": "resume answer cannot be empty"}, ensure_ascii=False, indent=2))
             return 1
 
         waiting = (job.get("last_result") or {}).get("waiting") or {}
@@ -79,28 +68,40 @@ def main() -> int:
         resume_note = "\n\n[Human Input Resume]\n"
         if question:
             resume_note += f"Question: {question}\n"
-        resume_note += f"Answer: {answer}\n"
-        resume_note += "要求：结合该回答继续执行目标。"
+        resume_note += f"Answer: {answer}\n要求：结合该回答继续执行目标。"
 
-        job["goal"] = f"{job.get('goal', '').rstrip()}{resume_note}"
-        history = job.setdefault("human_inputs", [])
-        history.append(
-            {
-                "at": utc_now(),
-                "question": question,
-                "answer": answer,
-            }
+        goal = f"{str(job.get('goal', '')).rstrip()}{resume_note}"
+        human_inputs = list(job.get("human_inputs") or [])
+        human_inputs.append({"at": utc_now(), "question": question, "answer": answer})
+        audit["decision"] = "approve"
+        status = "approved"
+
+        # Clear stale waiting snapshot so status view does not stick to previous run.
+        store.update_job(
+            args.job_id,
+            goal=goal,
+            human_inputs=json.dumps(human_inputs, ensure_ascii=False),
+            error=None,
+            last_notified_status="",
+            last_result=json.dumps({}, ensure_ascii=False),
+            run_id=None,
         )
-        job["audit"]["decision"] = "approve"
-        job["status"] = "approved"
-        job.pop("error", None)
-        job["last_notified_status"] = ""
-    elif args.cmd == "cancel":
-        job["status"] = "cancelled"
 
-    job["updated_at"] = utc_now()
-    atomic_write_json(path, job)
-    print(json.dumps(job, ensure_ascii=False, indent=2))
+        qhash = _qhash(question)
+        store.add_event(args.job_id, "answer_consumed", payload={"question_hash": qhash, "question": question})
+        store.add_event(args.job_id, "job_resumed", payload={"question": question, "answer": answer, "question_hash": qhash})
+    elif args.cmd == "cancel":
+        status = "cancelled"
+        store.add_event(args.job_id, "job_cancelled")
+
+    store.update_job(
+        args.job_id,
+        status=status,
+        audit_decision=audit.get("decision", "pending"),
+        audit_revision=audit.get("revision", ""),
+    )
+
+    print(json.dumps(store.get_job_snapshot(args.job_id), ensure_ascii=False, indent=2))
     return 0
 
 
