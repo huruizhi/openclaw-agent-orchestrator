@@ -207,7 +207,7 @@ class AgentChannelNotifier:
             return "❌ 任务失败"
         return "📣 任务通知"
 
-    def _send_discord_via_tool(self, channel_id: str, message: str) -> bool:
+    def _send_discord_via_tool(self, channel_id: str, message: str, components: dict | None = None) -> bool:
         cmd = [
             "openclaw",
             "message",
@@ -220,6 +220,8 @@ class AgentChannelNotifier:
             message,
             "--json",
         ]
+        if components:
+            cmd.extend(["--components", json.dumps(components, ensure_ascii=False)])
         try:
             cp = subprocess.run(
                 cmd,
@@ -298,7 +300,29 @@ class AgentChannelNotifier:
             job_name = str(payload.get("job_name") or payload.get("task_id") or "orchestrator")
             message = self._with_mention(str(payload.get("message") or self._format_message(event, payload)))
 
-            ok = self._send_discord_via_tool(channel_id=channel_id, message=message)
+            components = None
+            if event == "workflow_awaiting_audit":
+                run_id = str(payload.get("run_id") or "").strip()
+                # Discord buttons are for quick action guidance; user click acknowledges and then reply with command.
+                components = {
+                    "text": "快速操作",
+                    "reusable": True,
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": f"run_id: {run_id}\n点击按钮后请直接回复：\n- 批准 {run_id}\n- 修改 {run_id} <意见>",
+                        },
+                        {
+                            "type": "actions",
+                            "buttons": [
+                                {"label": "✅ 批准执行", "style": "success"},
+                                {"label": "✏️ 要求修改", "style": "secondary"},
+                            ],
+                        },
+                    ],
+                }
+
+            ok = self._send_discord_via_tool(channel_id=channel_id, message=message, components=components)
             if not ok:
                 logger.warning(
                     "Discord notify failed",
