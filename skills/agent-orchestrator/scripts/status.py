@@ -50,6 +50,21 @@ def _normalized_view(job: dict) -> dict:
         "heartbeat_at": out.get("heartbeat_at"),
     }
 
+    # P1-05: routing reason observability in status view
+    try:
+        tasks = ((lr or {}).get("orchestration") or {}).get("tasks") or []
+        reasons = [str(t.get("routing_reason", "")) for t in tasks if isinstance(t, dict) and t.get("routing_reason")]
+        if reasons:
+            out["routing_reason_stats"] = {
+                "total": len(reasons),
+                "hard_rule": len([r for r in reasons if r.startswith("hard_rule:")]),
+                "llm": len([r for r in reasons if r.startswith("llm:") or r == "llm:no_confidence"]),
+                "fallback": len([r for r in reasons if r.startswith("fallback:")]),
+                "sample": reasons[:10],
+            }
+    except Exception:
+        pass
+
     # Standardized waiting_human template to avoid flow breaks in chat.
     if out.get("status") == "waiting_human":
         waiting = (lr.get("waiting") or {}) if isinstance(lr, dict) else {}

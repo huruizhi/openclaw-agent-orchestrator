@@ -74,6 +74,18 @@
     "assigned_to": {
       "type": ["string", "null"],
       "description": "Agent name (filled by scheduler)"
+    },
+
+    "subtasks": {
+      "type": "array",
+      "description": "Optional P1/P2 decomposition details",
+      "items": {"type": "string"}
+    },
+
+    "dependencies": {
+      "type": "array",
+      "description": "Optional human-readable dependency notes",
+      "items": {"type": "string"}
     }
   }
 }

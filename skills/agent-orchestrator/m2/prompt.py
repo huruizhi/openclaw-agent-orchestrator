@@ -46,6 +46,7 @@ assigned_to (null or string, optional)
 
 TASK GRANULARITY:
 Each task must be atomic - one agent completes it in one attempt.
+Target granularity: 2-10 minutes per task. If a task is larger, split it.
 
 GOOD: "Fetch HN homepage", "Parse top posts", "Write blog post"
 BAD: "Analyze HN", "Investigate", "Think about content"
@@ -91,7 +92,9 @@ EXAMPLE TASK:
   "deps": [],
   "inputs": ["HN_URL"],
   "outputs": ["hn_posts.json"],
-  "done_when": ["hn_posts.json exists", "contains 10 posts"],
+  "done_when": ["Stage A: schema and contract pass", "Stage B: risk and quality checks pass"],
+  "subtasks": ["download page", "parse top 10", "write json"],
+  "dependencies": ["none"],
   "assigned_to": null
 }
 """
