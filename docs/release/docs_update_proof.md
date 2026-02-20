@@ -14,6 +14,6 @@ Primary commit: c0f2189
 - docs/release/acceptance_conclusion.md
 
 ## Verification
-- Files are present at repository paths under .
+- Files are present at repository paths under docs/release/.
 - Commit is available in local git history.
 - This proof file is committed in a follow-up commit.
