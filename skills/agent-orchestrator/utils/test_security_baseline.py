@@ -1,6 +1,6 @@
 import os
 
-from utils.security import require_control_token, sanitize_payload
+from utils.security import require_control_token, sanitize_payload, sanitize_text
 
 
 def test_control_token_required_and_validated():
@@ -31,9 +31,19 @@ def test_log_sanitizer_masks_secrets():
         "authorization": "Bearer secret-token",
         "email": "u@example.com",
         "phone": "13812345678",
-        "nested": {"api_key": "abc"},
+        "nested": {"api_key": "abc", "password": "p", "cookie": "sid=1"},
     }
     out = sanitize_payload(payload)
     assert out["authorization"] == "***"
     assert out["nested"]["api_key"] == "***"
+    assert out["nested"]["password"] == "***"
+    assert out["nested"]["cookie"] == "***"
     assert out["email"] != "u@example.com"
+
+
+def test_sanitize_text_masks_password_and_cookie():
+    s = "password=abc cookie=sid=123 token=xyz"
+    masked = sanitize_text(s)
+    assert "abc" not in masked
+    assert "sid=123" not in masked
+    assert "xyz" not in masked

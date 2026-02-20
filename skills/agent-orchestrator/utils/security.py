@@ -10,6 +10,8 @@ SENSITIVE_PATTERNS = [
     (re.compile(r"(authorization\s*[:=]\s*)([^\s]+)", re.I), r"\1***"),
     (re.compile(r"(token\s*[:=]\s*)([^\s]+)", re.I), r"\1***"),
     (re.compile(r"(api[_-]?key\s*[:=]\s*)([^\s]+)", re.I), r"\1***"),
+    (re.compile(r"(password\s*[:=]\s*)([^\s]+)", re.I), r"\1***"),
+    (re.compile(r"(cookie\s*[:=]\s*)([^\s]+)", re.I), r"\1***"),
     (re.compile(r"([\w.+-]+@[\w.-]+\.[A-Za-z]{2,})"), "***@***"),
     (re.compile(r"\b1\d{10}\b"), "***********"),
 ]

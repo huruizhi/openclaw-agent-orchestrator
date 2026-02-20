@@ -43,7 +43,9 @@ def main() -> int:
     try:
         require_control_token(args.token)
     except PermissionError as e:
-        print(json.dumps({"error": str(e), "code": "unauthorized"}, ensure_ascii=False, indent=2))
+        msg = str(e)
+        http_status = 403 if "not configured" in msg else 401
+        print(json.dumps({"error": msg, "code": "unauthorized", "http_status": http_status}, ensure_ascii=False, indent=2))
         return 1
 
     path = jobs_dir() / f"{args.job_id}.json"
