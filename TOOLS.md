@@ -57,10 +57,10 @@ Skills are shared. Your setup is yours. Keeping them apart means you can update 
 | Agent | 特殊能力 |
 |-------|---------|
 | **lab** | 浏览器操作、访问 X (Twitter)、微信公众号 |
-| **work** | 发送邮件 (himalaya) |
+| **work** | 发邮件/收件箱、web_search、工作安排与 todo list |
 | **techwriter** | 技术文档、博客、翻译 |
-| **code** | 代码编写、重构、调试、review |
-| **test** | 测试设计、验证 |
+| **code** | 代码实现、BUG 查找/修复、项目调试 |
+| **test** | 代码测试用例编写、代码测试执行 |
 | **image** | 图像生成、视觉处理 |
 | **enjoy** | 生活娱乐、日常陪伴 |
 | **main** | 核心决策、任务分配（默认） |
