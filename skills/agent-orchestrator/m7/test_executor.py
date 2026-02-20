@@ -109,7 +109,9 @@ def test_executor_done_flow():
     tasks_by_id = {"t1": {"id": "t1", "title": "Task One"}}
     result = executor.run(tasks_by_id)
 
-    assert result == {"status": "finished", "waiting": {}}
+    assert result["status"] == "finished"
+    assert result["waiting"] == {}
+    assert "convergence_report" in result
     assert scheduler.started == ["t1"]
     assert scheduler.finished == [("t1", True)]
     assert store.updates == [("t1", "running", None), ("t1", "completed", None)]
@@ -133,6 +135,7 @@ def test_executor_waiting_flow():
 
     assert result["status"] == "waiting"
     assert result["waiting"] == {"t1": "provide repo url"}
+    assert "convergence_report" in result
     assert scheduler.finished == []
     assert store.updates == [("t1", "running", None), ("t1", "waiting_human", None)]
     print("✓ M7 executor waiting flow test passed")

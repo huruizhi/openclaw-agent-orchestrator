@@ -28,6 +28,7 @@ cp .env.example .env
 | `ORCH_MAIN_HEARTBEAT_SECONDS` | `180` | Main channel progress heartbeat interval |
 | `ORCH_RUNNING_STALE_SECONDS` | `300` | Stale running detection / auto-recovery threshold |
 | `ORCH_HEARTBEAT_LOG_SECONDS` | `30` | Queue heartbeat event log interval |
+| `ORCH_MAX_PARALLEL_TASKS` | `2` | Max concurrent ready tasks dispatched to sub-agents |
 
 ### Example .env
 

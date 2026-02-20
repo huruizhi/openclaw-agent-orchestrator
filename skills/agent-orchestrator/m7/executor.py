@@ -1,5 +1,6 @@
 import os
 import time
+from collections import defaultdict
 from pathlib import Path
 
 from .parser import parse_messages
@@ -16,6 +17,14 @@ class Executor:
         self.waiting_tasks: dict[str, str] = {}
         self.notifier = None
         self.run_id = ""
+        self.max_parallel_tasks = max(1, int(os.getenv("ORCH_MAX_PARALLEL_TASKS", "2")))
+        self.task_started_at: dict[str, float] = {}
+        self.task_durations_ms: list[int] = []
+        self.task_retry_count: defaultdict[str, int] = defaultdict(int)
+        self.started_count = 0
+        self.completed_count = 0
+        self.failed_count = 0
+        self.agent_stats: defaultdict[str, dict] = defaultdict(lambda: {"started": 0, "completed": 0, "failed": 0})
         self.artifacts_dir = Path(artifacts_dir or os.getenv("ORCH_ARTIFACTS_DIR", "./workspace/artifacts"))
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
 
@@ -117,6 +126,42 @@ class Executor:
         missing = [str(p) for p in expected if not p.exists()]
         return len(missing) == 0, missing
 
+    def _record_task_end(self, task_id: str, success: bool, tasks_by_id: dict) -> None:
+        started = self.task_started_at.pop(task_id, None)
+        if started is not None:
+            self.task_durations_ms.append(int((time.monotonic() - started) * 1000))
+        agent = str((tasks_by_id.get(task_id) or {}).get("assigned_to") or "unassigned")
+        if success:
+            self.completed_count += 1
+            self.agent_stats[agent]["completed"] += 1
+        else:
+            self.failed_count += 1
+            self.agent_stats[agent]["failed"] += 1
+
+    def _convergence_report(self, tasks_by_id: dict) -> dict:
+        durations = sorted(self.task_durations_ms)
+        avg = (sum(durations) / len(durations)) if durations else 0
+        p95 = durations[int(len(durations) * 0.95) - 1] if durations else 0
+        blocked = sorted(
+            tid
+            for tid in tasks_by_id
+            if tid not in getattr(self.scheduler, "done", set())
+            and tid not in getattr(self.scheduler, "failed", set())
+        )
+        return {
+            "total": len(tasks_by_id),
+            "started": self.started_count,
+            "completed": self.completed_count,
+            "failed": self.failed_count,
+            "by_agent": dict(self.agent_stats),
+            "avg_duration_ms": int(avg),
+            "p95_duration_ms": int(p95),
+            "retry_count": sum(self.task_retry_count.values()),
+            "blocked": blocked,
+            "blocked_by": {tid: list((tasks_by_id.get(tid) or {}).get("deps", []) or []) for tid in blocked},
+            "max_parallel_tasks": self.max_parallel_tasks,
+        }
+
     def run(self, tasks_by_id: dict) -> dict:
         idle_timeout_seconds = int(os.getenv("ORCH_EXECUTOR_IDLE_TIMEOUT_SECONDS", "60"))
         last_progress_at = time.monotonic()
@@ -124,14 +169,22 @@ class Executor:
         while not self.scheduler.is_finished():
             progressed = False
             runnable = self.scheduler.get_runnable_tasks()
-            for agent, task_id in runnable:
+            available_slots = max(0, self.max_parallel_tasks - len(self.task_to_session))
+            if available_slots == 0 and runnable:
+                self._notify({}, "", "parallel_throttled", message="parallel slots exhausted")
+            for agent, task_id in runnable[:available_slots]:
                 session = self.adapter.ensure_session(agent)
 
                 if self.adapter.is_session_idle(session):
                     self.adapter.mark_session_busy(session)
                     self.scheduler.start_task(task_id)
+                    self.task_retry_count[task_id] += 1
+                    self.started_count += 1
+                    self.agent_stats[str(agent or "unassigned")]["started"] += 1
+                    self.task_started_at[task_id] = time.monotonic()
                     self._set_task_state(task_id, "running")
                     self._notify(tasks_by_id, task_id, "task_dispatched")
+                    self._notify(tasks_by_id, task_id, "parallel_started", max_parallel_tasks=self.max_parallel_tasks)
                     self.watcher.watch(session)
                     self.task_to_session[task_id] = session
                     self.session_to_task[session] = task_id
@@ -143,6 +196,7 @@ class Executor:
                     except Exception as e:
                         # Dispatch failure should fail the task fast (no global hang).
                         self.scheduler.finish_task(task_id, False)
+                        self._record_task_end(task_id, False, tasks_by_id)
                         self._set_task_state(task_id, "failed", error=f"dispatch failed: {e}")
                         self._notify(
                             tasks_by_id,
@@ -171,6 +225,7 @@ class Executor:
                         ok, missing = self._validate_task_outputs(task)
                         if not ok:
                             self.scheduler.finish_task(task_id, False)
+                            self._record_task_end(task_id, False, tasks_by_id)
                             self._set_task_state(task_id, "failed", error=f"missing outputs: {', '.join(missing)}")
                             self._notify(
                                 tasks_by_id,
@@ -180,8 +235,10 @@ class Executor:
                             )
                         else:
                             self.scheduler.finish_task(task_id, True)
+                            self._record_task_end(task_id, True, tasks_by_id)
                             self._set_task_state(task_id, "completed")
                             self._notify(tasks_by_id, task_id, "task_completed")
+                            self._notify(tasks_by_id, task_id, "parallel_completed")
 
                         self._release_task_session(task_id, session)
                         progressed = True
@@ -190,6 +247,7 @@ class Executor:
 
                     if result["type"] == "failed":
                         self.scheduler.finish_task(task_id, False)
+                        self._record_task_end(task_id, False, tasks_by_id)
                         self._set_task_state(task_id, "failed")
                         self._notify(tasks_by_id, task_id, "task_failed")
                         self._release_task_session(task_id, session)
@@ -208,7 +266,11 @@ class Executor:
                             question=question,
                             message=f"[TASK_WAITING] {question}",
                         )
-                        return {"status": "waiting", "waiting": self.waiting_tasks}
+                        return {
+                            "status": "waiting",
+                            "waiting": self.waiting_tasks,
+                            "convergence_report": self._convergence_report(tasks_by_id),
+                        }
 
             if not runnable and not events and not getattr(self.scheduler, "running", set()) and not progressed:
                 raise RuntimeError("Executor stalled: no runnable tasks and no incoming events")
@@ -218,6 +280,7 @@ class Executor:
                 for task_id in running_tasks:
                     session = self.task_to_session.get(task_id)
                     self.scheduler.finish_task(task_id, False)
+                    self._record_task_end(task_id, False, tasks_by_id)
                     self._set_task_state(task_id, "failed", error=f"idle timeout after {idle_timeout_seconds}s")
                     self._notify(
                         tasks_by_id,
@@ -228,4 +291,8 @@ class Executor:
                     self._release_task_session(task_id, session)
                 last_progress_at = time.monotonic()
 
-        return {"status": "finished", "waiting": {}}
+        return {
+            "status": "finished",
+            "waiting": {},
+            "convergence_report": self._convergence_report(tasks_by_id),
+        }
