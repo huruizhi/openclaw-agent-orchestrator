@@ -11,13 +11,13 @@ from pathlib import Path
 from typing import Any
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+GLOBAL_ENV_PATH = Path("/home/ubuntu/.openclaw/.env")
 MAX_ATTEMPTS = 2
 LEASE_SECONDS = 60
 STALE_TIMEOUT_SECONDS = 120
 
 
-def load_env() -> None:
-    env_path = ROOT_DIR / ".env"
+def _load_env_file(env_path: Path) -> None:
     if not env_path.exists():
         return
     for line in env_path.read_text(encoding="utf-8").splitlines():
@@ -29,6 +29,12 @@ def load_env() -> None:
         v = v.strip().strip('"').strip("'")
         if k and k not in os.environ:
             os.environ[k] = v
+
+
+def load_env() -> None:
+    # Global env first, then skill-local env.
+    _load_env_file(GLOBAL_ENV_PATH)
+    _load_env_file(ROOT_DIR / ".env")
 
 
 def utc_now() -> str:
