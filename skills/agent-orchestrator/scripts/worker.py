@@ -78,6 +78,11 @@ def _execute_job(store: StateStore, job_id: str, worker_id: str, timeout_seconds
         store.add_event(job_id, "status_changed", payload={"status": "planning"})
         audit_gate = True
     elif status == "approved":
+        if not bool(job.get("audit_passed")):
+            store.update_job(job_id, status="awaiting_audit")
+            store.add_event(job_id, "audit_gate_blocked", payload={"reason": "audit_passed=false"})
+            return
+
         prev = job.get("last_result") or {}
         prev_status = str(prev.get("status", "")).strip().lower() if isinstance(prev, dict) else ""
         prev_run = str(job.get("run_id") or (job.get("audit") or {}).get("run_id") or "").strip() or None

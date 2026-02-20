@@ -43,15 +43,18 @@ def main() -> int:
 
     status = job.get("status")
     audit = job.get("audit") or {}
+    audit_passed = bool(job.get("audit_passed"))
 
     if args.cmd == "approve":
         audit["decision"] = "approve"
+        audit_passed = True
         if status in {"awaiting_audit", "queued"}:
             status = "approved"
         store.add_event(args.job_id, "audit_approved", payload={"at": utc_now()})
     elif args.cmd == "revise":
         audit["decision"] = "revise"
         audit["revision"] = args.revision
+        audit_passed = False
         status = "revise_requested"
         store.add_event(args.job_id, "audit_revise_requested", payload={"revision": args.revision})
     elif args.cmd == "resume":
@@ -73,8 +76,8 @@ def main() -> int:
         goal = f"{str(job.get('goal', '')).rstrip()}{resume_note}"
         human_inputs = list(job.get("human_inputs") or [])
         human_inputs.append({"at": utc_now(), "question": question, "answer": answer})
-        audit["decision"] = "approve"
-        status = "approved"
+        # Resume does not grant audit; it only continues an already-audited workflow.
+        status = "approved" if audit_passed else "awaiting_audit"
 
         # Clear stale waiting snapshot so status view does not stick to previous run.
         store.update_job(
@@ -99,6 +102,7 @@ def main() -> int:
         status=status,
         audit_decision=audit.get("decision", "pending"),
         audit_revision=audit.get("revision", ""),
+        audit_passed=(1 if audit_passed else 0),
     )
 
     print(json.dumps(store.get_job_snapshot(args.job_id), ensure_ascii=False, indent=2))

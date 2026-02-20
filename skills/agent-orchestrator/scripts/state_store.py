@@ -112,6 +112,7 @@ class StateStore:
                     status TEXT NOT NULL,
                     audit_decision TEXT NOT NULL DEFAULT 'pending',
                     audit_revision TEXT NOT NULL DEFAULT '',
+                    audit_passed INTEGER NOT NULL DEFAULT 0,
                     run_id TEXT,
                     last_result TEXT,
                     error TEXT,
@@ -168,6 +169,10 @@ class StateStore:
                 CREATE INDEX IF NOT EXISTS idx_events_job_id ON events(job_id, id);
                 """
             )
+            # lightweight migration for existing DBs
+            cols = {r[1] for r in c.execute("PRAGMA table_info(jobs)").fetchall()}
+            if "audit_passed" not in cols:
+                c.execute("ALTER TABLE jobs ADD COLUMN audit_passed INTEGER NOT NULL DEFAULT 0")
 
     def submit_job(self, goal: str) -> dict[str, Any]:
         now = utc_now()
@@ -283,7 +288,10 @@ class StateStore:
                     continue
                 if not stale and lease is None:
                     continue
-                new_status = "approved" if row["status"] == "running" else "queued"
+                if row["status"] == "running":
+                    new_status = "approved" if int(row["audit_passed"] or 0) == 1 else "awaiting_audit"
+                else:
+                    new_status = "queued"
                 c.execute(
                     "UPDATE jobs SET status=?, worker_id=NULL, runner_pid=NULL, lease_until=NULL, updated_at=? WHERE job_id=?",
                     (new_status, utc_now(), row["job_id"]),
