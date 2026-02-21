@@ -26,11 +26,33 @@ def _is_valid_confidence(value) -> bool:
     return 0.0 <= v <= 1.0
 
 
-def assign_agents(tasks_dict: dict) -> dict:
-    """LLM-first routing.
+def _hard_rule_assign(task: dict) -> tuple[str, str] | None:
+    """P1-01: hard rules before LLM.
 
-    User requirement: routing should be decided by LLM instead of rule matching.
-    Fallback only when LLM is unavailable/invalid.
+    If task text clearly indicates a known domain, route immediately.
+    """
+    title = str(task.get("title", "")).lower()
+    desc = str(task.get("description", "")).lower()
+    text = f"{title}\n{desc}"
+
+    rules = [
+        ("work", ["github", "issue", "milestone", "collect", "fetch", "status report"]),
+        ("code", ["implement", "fix", "refactor", "patch", "code", "开发", "实现", "修复"]),
+        ("test", ["test", "pytest", "regression", "ci", "验证", "回归"]),
+        ("lab", ["browser", "twitter", "x.com", "web automation", "scrape"]),
+    ]
+
+    for agent, keywords in rules:
+        if any(k in text for k in keywords):
+            return agent, f"hard_rule:{agent}"
+    return None
+
+
+def assign_agents(tasks_dict: dict) -> dict:
+    """Routing policy:
+    1) Hard rules first (P1-01)
+    2) LLM routing when no hard rule hit
+    3) fallback default
     """
     agents_data = _load_agents()
     default_agent = agents_data["default_agent"]
@@ -45,11 +67,14 @@ def assign_agents(tasks_dict: dict) -> dict:
         description = str(task.get("description", ""))
         cache_key = title + "\n" + description
 
-        if cache_key in cache:
+        hard = _hard_rule_assign(task)
+        if hard and hard[0] in agent_names:
+            assigned, reason = hard
+        elif cache_key in cache:
             assigned, reason = cache[cache_key]
         else:
             assigned = default_agent
-            reason = "default"
+            reason = "fallback:default"
             try:
                 decision = llm_assign(task, agents_data)
                 candidate = decision.get("assigned_to")
@@ -58,12 +83,11 @@ def assign_agents(tasks_dict: dict) -> dict:
                     assigned = candidate
                     reason = f"llm:{float(confidence):.2f}"
                 elif candidate in agent_names:
-                    # accept candidate even if confidence missing, but annotate
                     assigned = candidate
                     reason = "llm:no_confidence"
             except Exception:
                 assigned = default_agent
-                reason = "default_on_llm_error"
+                reason = "fallback:llm_error"
 
             cache[cache_key] = (assigned, reason)
 

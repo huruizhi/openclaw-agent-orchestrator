@@ -227,6 +227,60 @@ def _normalize_task_ids(tasks_dict: dict) -> dict:
 
     return tasks_dict
 
+
+def _enrich_decomposition(tasks_dict: dict) -> dict:
+    """P1-02/P2-02/P2-03 post-process:
+    - expose subtasks/dependencies fields
+    - enforce task granularity hints
+    - inject Stage A / Stage B acceptance criteria
+    """
+    tasks = tasks_dict.get("tasks", [])
+    if not isinstance(tasks, list):
+        return tasks_dict
+
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+
+        title = str(task.get("title", "")).strip()
+        desc = str(task.get("description", "")).strip()
+
+        # P1-02: composite decomposition hints
+        subtasks = task.get("subtasks") if isinstance(task.get("subtasks"), list) else []
+        if not subtasks:
+            if "→" in title:
+                subtasks = [x.strip() for x in title.split("→") if x.strip()]
+            elif "->" in title:
+                subtasks = [x.strip() for x in title.split("->") if x.strip()]
+            elif "抓取" in title and "写作" in title and "发送" in title:
+                subtasks = ["抓取", "写作", "发送"]
+            elif "实现" in title and "测试" in title:
+                subtasks = ["实现", "测试"]
+            elif "," in title and len(title) > 32:
+                subtasks = [x.strip() for x in title.split(",") if x.strip()]
+        if subtasks:
+            task["subtasks"] = subtasks[:6]
+
+        deps = task.get("deps", []) or []
+        if "dependencies" not in task:
+            task["dependencies"] = [f"depends_on:{d}" for d in deps]
+
+        # P2-02: granularity soft guard (2-10 min/task) via explicit note
+        if len(title) > 28 or (len(subtasks) if isinstance(subtasks, list) else 0) > 4:
+            task["description"] = (desc + "\n[granularity] keep this task within 2-10 minutes; split if needed.").strip()
+
+        # P2-03: two-stage acceptance
+        done_when = list(task.get("done_when", []) or [])
+        has_stage_a = any(str(x).lower().startswith("stage a") for x in done_when)
+        has_stage_b = any(str(x).lower().startswith("stage b") for x in done_when)
+        if not has_stage_a:
+            done_when.insert(0, "Stage A: spec/schema/contracts pass")
+        if not has_stage_b:
+            done_when.append("Stage B: code quality and risk checks pass")
+        task["done_when"] = done_when
+
+    return tasks_dict
+
 def decompose(goal: str) -> dict:
     """Decompose goal into tasks with repair loop."""
     logger.info("Starting task decomposition", goal=goal)
@@ -244,6 +298,7 @@ def decompose(goal: str) -> dict:
                 raise RuntimeError("LLM did not return tasks[]")
 
             parsed = _normalize_task_ids(parsed)
+            parsed = _enrich_decomposition(parsed)
             validate_tasks(parsed)
 
             task_count = len(parsed["tasks"])

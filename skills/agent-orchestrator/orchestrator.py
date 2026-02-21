@@ -344,6 +344,25 @@ def _persist_audit_state(run_id: str, project_id: str, goal: str, tasks_dict: di
     return str(path)
 
 
+def _build_audit_gate_payload(*, status: str, job_id: str, run_id: str, goal: str, impact_scope: str, risk_items: str, command_preview: str, user_instruction: str) -> dict:
+    # P1-03: strict 7-field audit template
+    payload = {
+        "status": status,
+        "job_id": job_id,
+        "run_id": run_id,
+        "goal": goal,
+        "impact_scope": impact_scope,
+        "risk_items": risk_items,
+        "command_preview": command_preview,
+        "user_instruction": user_instruction,
+    }
+    required = ["status", "job_id", "run_id", "goal", "impact_scope", "risk_items", "command_preview", "user_instruction"]
+    missing = [k for k in required if not str(payload.get(k, "")).strip()]
+    if missing:
+        raise RuntimeError(f"audit template invalid, missing fields: {','.join(missing)}")
+    return payload
+
+
 def run_workflow(goal: str, base_url: str, api_key: str):
     started_at = datetime.now()
     run_id_hint = os.getenv("ORCH_RUN_ID", "").strip()
@@ -351,6 +370,44 @@ def run_workflow(goal: str, base_url: str, api_key: str):
     project_id = _set_dynamic_project_id(goal, run_id)
     _load_runtime_modules()
     notifier = AsyncAgentNotifier(AgentChannelNotifier.from_env())
+
+    # P2-01: design confirmation node before decomposition/execution
+    require_design_confirm = os.getenv("ORCH_REQUIRE_DESIGN_CONFIRM", "0").strip().lower() in {"1", "true", "yes", "on"}
+    design_confirmed = os.getenv("ORCH_DESIGN_CONFIRMED", "0").strip().lower() in {"1", "true", "yes", "on"}
+    if require_design_confirm and not design_confirmed:
+        design_path = workspace_paths.ARTIFACTS_DIR / "design_draft.md"
+        draft = (
+            "# Design Draft (Pre-Execution Confirmation)\n\n"
+            f"Goal: {goal}\n\n"
+            "## Plan\n"
+            "1) decompose tasks\n"
+            "2) assign agents (hard-rule first, then llm)\n"
+            "3) execute with audit gate\n"
+            "4) summarize status/risk/recovery\n\n"
+            "请确认：回复 approve 后继续执行。\n"
+        )
+        design_path.parent.mkdir(parents=True, exist_ok=True)
+        design_path.write_text(draft, encoding="utf-8")
+
+        waiting = {"design_confirm": "请确认设计草案（artifacts/design_draft.md），回复 approve 继续执行。"}
+        notifier.notify(
+            "main",
+            "workflow_waiting_human",
+            {
+                "run_id": run_id,
+                "project_id": project_id,
+                "message": "waiting for design confirmation before execution",
+                "waiting": waiting,
+                "design_draft": str(design_path),
+            },
+        )
+        return {
+            "status": "waiting_human",
+            "run_id": run_id,
+            "project_id": project_id,
+            "waiting": waiting,
+            "design_draft": str(design_path),
+        }
 
     tasks_dict = decompose(goal)
     tasks_dict = assign_agents(tasks_dict)
@@ -389,15 +446,26 @@ def run_workflow(goal: str, base_url: str, api_key: str):
         impact_scope = f"{len(report.get('tasks', []))} tasks / project={project_id}"
         risk_items = "未经审批执行可能导致外发消息、文件变更或环境变更"
         cmd_preview = "python3 scripts/control.py approve <job_id> | python3 scripts/control.py revise <job_id> \"<意见>\""
+        user_instruction = "回复“同意”或“拒绝 + 条件”"
+        gate_payload = _build_audit_gate_payload(
+            status="awaiting_audit",
+            job_id=job_id,
+            run_id=run_id,
+            goal=goal,
+            impact_scope=impact_scope,
+            risk_items=risk_items,
+            command_preview=cmd_preview,
+            user_instruction=user_instruction,
+        )
         audit_message = (
             "【AUDIT_GATE】\n"
-            f"1) status: awaiting_audit\n"
-            f"2) job_id/run_id: {job_id} / {run_id}\n"
-            f"3) 变更目标: {goal}\n"
-            f"4) 影响范围: {impact_scope}\n"
-            f"5) 风险项: {risk_items}\n"
-            f"6) 执行命令预览: {cmd_preview}\n"
-            "7) 用户审批指令: 回复“同意”或“拒绝 + 条件”\n"
+            f"1) status: {gate_payload['status']}\n"
+            f"2) job_id/run_id: {gate_payload['job_id']} / {gate_payload['run_id']}\n"
+            f"3) 变更目标: {gate_payload['goal']}\n"
+            f"4) 影响范围: {gate_payload['impact_scope']}\n"
+            f"5) 风险项: {gate_payload['risk_items']}\n"
+            f"6) 执行命令预览: {gate_payload['command_preview']}\n"
+            f"7) 用户审批指令: {gate_payload['user_instruction']}\n"
             "---\n"
             "tasks preview:\n"
             f"{preview_text}"
@@ -406,13 +474,8 @@ def run_workflow(goal: str, base_url: str, api_key: str):
             "main",
             "workflow_awaiting_audit",
             {
-                "run_id": run_id,
-                "job_id": job_id,
+                **gate_payload,
                 "project_id": project_id,
-                "goal": goal,
-                "impact_scope": impact_scope,
-                "risk_items": risk_items,
-                "command_preview": cmd_preview,
                 "message": audit_message,
                 "audit_state_path": audit_state_path,
                 "report_path": report_path,
@@ -576,6 +639,12 @@ def run_workflow(goal: str, base_url: str, api_key: str):
             "orchestration": report,
         }
     except Exception as e:
+        failure_recovery = {
+            "root_cause": str(e),
+            "impact": "workflow execution halted before full completion",
+            "recovery_plan": "fix root cause and rerun from audit-approved state",
+            "needs_human_approval": True,
+        }
         notifier.notify(
             "main",
             "workflow_failed",
@@ -584,6 +653,7 @@ def run_workflow(goal: str, base_url: str, api_key: str):
                 "project_id": project_id,
                 "error": str(e),
                 "message": f"workflow error: {e}",
+                "failure_recovery": failure_recovery,
             },
         )
         try:
@@ -599,6 +669,7 @@ def run_workflow(goal: str, base_url: str, api_key: str):
                 started_at=started_at,
             )
             report["error"] = str(e)
+            report["failure_recovery"] = failure_recovery
             _persist_run_report(run_id, report)
         except Exception:
             pass
