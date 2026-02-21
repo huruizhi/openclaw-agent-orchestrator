@@ -596,27 +596,6 @@ def run_workflow(goal: str, base_url: str, api_key: str):
             executor.waiting_tasks = {}
             result = executor.run(tasks_by_id)
 
-        if result.get("status") == "finished":
-            notifier.notify(
-                "main",
-                "workflow_finished",
-                {
-                    "run_id": run_id,
-                    "project_id": project_id,
-                    "message": f"workflow finished: {run_id} ({project_id})",
-                },
-            )
-        else:
-            notifier.notify(
-                "main",
-                "workflow_failed",
-                {
-                    "run_id": run_id,
-                    "project_id": project_id,
-                    "message": f"workflow failed: {run_id} ({project_id})",
-                },
-            )
-
         final_status = str(result.get("status") or "finished")
         report = _build_orchestration_report(
             run_id=run_id,
@@ -630,6 +609,43 @@ def run_workflow(goal: str, base_url: str, api_key: str):
             started_at=started_at,
         )
         report_path = _persist_run_report(run_id, report)
+
+        summary = report.get("summary", {}) if isinstance(report, dict) else {}
+        done = int(summary.get("done", 0) or 0)
+        failed = int(summary.get("failed", 0) or 0)
+        running = int(summary.get("running", 0) or 0)
+        completion_message = (
+            f"status={final_status}; run_id={run_id}; "
+            f"done-failed-running={done}-{failed}-{running}; "
+            f"report={report_path}; artifacts={report.get('artifacts_dir', str(artifacts_dir))}"
+        )
+
+        if final_status == "finished":
+            notifier.notify(
+                "main",
+                "workflow_finished",
+                {
+                    "run_id": run_id,
+                    "project_id": project_id,
+                    "summary": summary,
+                    "report_path": report_path,
+                    "artifacts_dir": report.get("artifacts_dir", str(artifacts_dir)),
+                    "message": completion_message,
+                },
+            )
+        else:
+            notifier.notify(
+                "main",
+                "workflow_failed",
+                {
+                    "run_id": run_id,
+                    "project_id": project_id,
+                    "summary": summary,
+                    "report_path": report_path,
+                    "artifacts_dir": report.get("artifacts_dir", str(artifacts_dir)),
+                    "message": completion_message,
+                },
+            )
 
         return {
             **result,
