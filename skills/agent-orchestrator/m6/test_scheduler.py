@@ -85,6 +85,12 @@ def test_scheduler_error_handling():
     except ValueError:
         pass
 
+    # state should remain unchanged after invalid finish call
+    assert scheduler.ready == {"a"}
+    assert scheduler.running == set()
+    assert scheduler.done == set()
+    assert scheduler.failed == set()
+
     scheduler.start_task("a")
     try:
         scheduler.start_task("a")

@@ -81,6 +81,26 @@ class AssertStartBeforeSendAdapter(FakeAdapter):
         return super().send_message(session_id, text)
 
 
+class BoomGetRunnableScheduler(FakeScheduler):
+    def get_runnable_tasks(self):
+        raise RuntimeError("boom get runnable")
+
+
+class BoomStartScheduler(FakeScheduler):
+    def start_task(self, task_id):
+        raise RuntimeError("boom start")
+
+
+class BoomFinishScheduler(FakeScheduler):
+    def finish_task(self, task_id, success):
+        raise RuntimeError("boom finish")
+
+
+def _assert_std_error(err: dict):
+    for k in ["error_code", "root_cause", "impact", "recovery_plan"]:
+        assert k in err
+
+
 def test_parse_messages_markers():
     msgs = [
         {"role": "assistant", "content": "ok [TASK_DONE]"},
@@ -159,8 +179,44 @@ def test_executor_sets_running_before_send():
     print("✓ M7 executor running-before-send test passed")
 
 
+def test_executor_safe_wrapper_get_runnable_error():
+    scheduler = BoomGetRunnableScheduler([[('agent_a', 't1')]])
+    adapter = FakeAdapter([])
+    watcher = SessionWatcher(adapter)
+    executor = Executor(scheduler, adapter, watcher)
+    result = executor.run({"t1": {"id": "t1", "title": "Task One"}})
+    assert result["status"] == "failed"
+    _assert_std_error(result["error"])
+    assert "GET_RUNNABLE_TASKS" in result["error"]["error_code"]
+
+
+def test_executor_safe_wrapper_start_task_error():
+    scheduler = BoomStartScheduler([[('agent_a', 't1')]])
+    adapter = FakeAdapter([])
+    watcher = SessionWatcher(adapter)
+    executor = Executor(scheduler, adapter, watcher)
+    result = executor.run({"t1": {"id": "t1", "title": "Task One"}})
+    assert result["status"] == "failed"
+    _assert_std_error(result["error"])
+    assert "START_TASK" in result["error"]["error_code"]
+
+
+def test_executor_safe_wrapper_finish_task_error():
+    scheduler = BoomFinishScheduler([[('agent_a', 't1')]])
+    adapter = FakeAdapter([[{"role": "assistant", "content": "[TASK_DONE]"}]])
+    watcher = SessionWatcher(adapter)
+    executor = Executor(scheduler, adapter, watcher)
+    result = executor.run({"t1": {"id": "t1", "title": "Task One"}})
+    assert result["status"] == "failed"
+    _assert_std_error(result["error"])
+    assert "FINISH_TASK" in result["error"]["error_code"]
+
+
 if __name__ == "__main__":
     test_parse_messages_markers()
     test_executor_done_flow()
     test_executor_waiting_flow()
     test_executor_sets_running_before_send()
+    test_executor_safe_wrapper_get_runnable_error()
+    test_executor_safe_wrapper_start_task_error()
+    test_executor_safe_wrapper_finish_task_error()
