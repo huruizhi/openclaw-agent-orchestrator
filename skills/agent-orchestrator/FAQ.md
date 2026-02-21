@@ -12,12 +12,12 @@ OpenClaw Agent Orchestrator 用于把目标拆解为任务并自动执行，支�
 - 配置 `.env`
 - 提交任务并查看 `scripts/submit.py`/`scripts/status.py`
 
-## 4. 控制命令为什么返回 401？
-`scripts/control.py` 鉴权失败（未带 token 或 token 不匹配）。
-请确保：`ORCH_AUTH_ENABLED=1` 且传入 `--token "$ORCH_CONTROL_TOKEN"`。
+## 4. 控制命令支持 `--token` 吗？
+不支持。`scripts/control.py` 当前是本地 CLI 控制路径，没有 `--token` 参数。
+如果你需要远程控制鉴权能力，请按 `v1.2.x+` 规划扩展控制面。
 
-## 5. 控制命令为什么返回 403？
-`ORCH_AUTH_ENABLED=1` 且 `ORCH_CONTROL_TOKEN` 未配置。\n请在 `.env` 配置后重启终端再执行。
+## 5. 当前控制面的安全边界是什么？
+信任边界是“本机 shell 用户”。建议只在受控主机执行控制命令，并限制机器访问权限。
 
 ## 6. 审计日志放在哪里？
 默认路径：`BASE_PATH/<PROJECT_ID>/.orchestrator/audit/audit_events.jsonl`，可用 `scripts/audit_timeline.py` 查询。
@@ -39,10 +39,10 @@ python3 scripts/control.py resume <job_id> "<answer>"
 ```bash
 python3 -m pytest -q utils/test_security_baseline.py
 ```
-并确认 token/password/cookie 不在日志明文出现。
+并确认 password/cookie/api_key 等敏感字段不在日志明文出现。
 
 ## 11. 发布前必须做什么？
 - README 关键步骤可执行
-- 安全门控（401/403）验证
+- 控制命令与当前实现保持一致（不包含 `--token`）
 - 审计查询（job/run 级）可重放
 - 关键回归测试可复现通过
