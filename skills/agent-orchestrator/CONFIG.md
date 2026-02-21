@@ -112,3 +112,11 @@ LLM_MODEL=claude-3-opus-20240229
 
 # Issue #42
 Output validation defaults: non-empty output check and optional JSON schema check can be enabled via executor config.
+
+
+## v1.2.0 runtime flags
+- `ORCH_TERMINAL_COMPAT` (`1`/`0`): allow legacy text protocol compatibility payload fields.
+- `ORCH_OUTPUT_VALIDATE_NON_EMPTY` (`1`/`0`): require outputs non-empty.
+- `ORCH_OUTPUT_VALIDATE_FRESHNESS` (`1`/`0`): require output file freshness within `ORCH_OUTPUT_MAX_AGE_MINUTES` (default 120).
+- `ORCH_OUTPUT_VALIDATE_JSON` (`1`/`0`): require `.json` outputs to be valid JSON.
+- `ORCH_FAILURE_RETRY_TRANSIENT`, `ORCH_FAILURE_RETRY_LOGIC`: retry limits for classified failures.

@@ -86,3 +86,12 @@ Before a task transitions to terminal success state, the executor should validat
 ## Issue #45 Release gate
 
 Release workflow for v1.2.0: run issues 40-44 in canary first, validate convergence report and structured terminal evidence, then promote artifact set. Rollback playbook keeps last known-good artifact namespace and clears partial outputs per task.
+
+
+## v1.2.0 Protocol Update (Structured runtime contract)
+- Terminal events now use protocol v2 payload when compatibility mode enabled:
+  - `task_completed` / `task_failed` / `task_waiting` include `status_protocol="v2"`, `terminal_state`, `failure` block and `retry_policy`.
+- Malformed terminal payloads are rejected: parser returns `MALFORMED_PAYLOAD` and executor marks task failed with actionable error.
+- `TASK_WAITING` pauses only the task branch (`scheduler.pause_task`) and keeps unrelated runnable tasks flowing; task-level wait state is tracked for resume path.
+- Failure class and retryability are now attached to terminal errors (`failure_class`, `retryable`).
+- Canary + rollback support scripts added: `scripts/canary_gate.py`, `scripts/rollback_release.sh` for release-gate execution.
