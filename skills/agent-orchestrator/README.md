@@ -74,3 +74,7 @@ python3 -m pytest -q utils/test_security_baseline.py
 
 - 技术问题优先查看 `Runbook.md` 与 `FAQ.md`
 - 对于状态停滞、鉴权异常、审计不足，按 Runbook 标准流程提交排障记录
+
+## Issue #41 Terminal completion protocol
+
+Execution terminal events now include structured terminal status metadata via `task_terminal` notifications: `task_completed`, `task_failed`, `task_waiting` with `terminal_state` and `status_protocol`.
