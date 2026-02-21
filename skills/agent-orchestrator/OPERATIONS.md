@@ -131,3 +131,7 @@
 - `task_resumed`
 - `run_restarted_from_resume`
 - `status_changed` (`completed`)
+
+## Issue #44 Failure classification matrix
+
+Standardize failure classes (`transient`, `logic`, `resource`, `human`) with structured recovery suggestions and impact notes in terminal payloads.
