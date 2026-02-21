@@ -15,8 +15,8 @@ python3 test_imports.py
 ```bash
 cp .env.example .env
 # .env 关键项
-ORCH_AUTH_ENABLED=1
-ORCH_CONTROL_TOKEN=<strong_token>
+LLM_URL=<your_llm_url>
+LLM_API_KEY=<your_llm_key>
 ```
 
 3. 验证控制与脱敏
@@ -44,7 +44,7 @@ python3 scripts/audit_timeline.py --job-id <job_id>
 - 检查是否缺少控制动作。
 - 使用 approve/revise：
 ```bash
-python3 scripts/control.py approve <job_id> --token "$ORCH_CONTROL_TOKEN"
+python3 scripts/control.py approve <job_id>
 ```
 
 ### C. `waiting_human` 无法继续
@@ -53,11 +53,9 @@ python3 scripts/control.py approve <job_id> --token "$ORCH_CONTROL_TOKEN"
 python3 scripts/control.py resume <job_id> "<answer>"
 ```
 
-### D. 控制鉴权异常
-- 看不到 `ORCH_CONTROL_TOKEN`：接口返回 `http_status=403`
-  - 配置 `.env` 后重试。
-- token 错误：返回 `http_status=401`
-  - 重新生成/对齐 token。
+### D. 控制命令参数异常
+- `scripts/control.py` 当前不支持 `--token`。
+- 若出现参数错误，执行 `python3 scripts/control.py -h` 以当前 CLI 帮助为准。
 
 ### E. 审计缺失或不完整
 - 核查 `BASE_PATH/<PROJECT_ID>/.orchestrator/audit/audit_events.jsonl`
@@ -77,5 +75,5 @@ python3 scripts/audit_timeline.py --job-id <job_id>
 ## 发布验收门
 
 - 关键命令通过：`status`, `approve`, `resume`, `audit_timeline`
-- 关键安全项通过：未鉴权访问返回 401/403（人工核验日志）
+- 控制面文档与实现一致（本地 CLI 控制，无 `--token` 参数）
 - 关键测试通过：`utils/test_security_baseline.py`

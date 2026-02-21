@@ -10,10 +10,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from runtime_defaults import (
+    DEFAULT_ORCH_RUNNING_STALE_SECONDS,
+    get_heartbeat_log_seconds,
+)
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 MAX_ATTEMPTS = 2
 LEASE_SECONDS = 60
-STALE_TIMEOUT_SECONDS = 120
+STALE_TIMEOUT_SECONDS = DEFAULT_ORCH_RUNNING_STALE_SECONDS
 
 
 def load_env() -> None:
@@ -261,7 +266,8 @@ class StateStore:
             row = c.execute("SELECT last_heartbeat_log_ts FROM jobs WHERE job_id=?", (job_id,)).fetchone()
             now_ts = int(datetime.now(timezone.utc).timestamp())
             last_ts = int((row["last_heartbeat_log_ts"] if row and row["last_heartbeat_log_ts"] is not None else 0) or 0)
-            if (not last_ts) or (now_ts - last_ts >= 30):
+            heartbeat_log_seconds = get_heartbeat_log_seconds()
+            if (not last_ts) or (now_ts - last_ts >= heartbeat_log_seconds):
                 c.execute("UPDATE jobs SET last_heartbeat_log_ts=? WHERE job_id=?", (now_ts, job_id))
                 self._event_conn(
                     c,

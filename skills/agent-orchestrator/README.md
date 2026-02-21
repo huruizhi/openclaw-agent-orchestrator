@@ -34,7 +34,7 @@ python3 scripts/status.py <job_id>
 ### 3. 人工审批与恢复
 
 ```bash
-python3 scripts/control.py approve <job_id> --token "$ORCH_CONTROL_TOKEN"
+python3 scripts/control.py approve <job_id>
 python3 scripts/control.py resume <job_id> "<answer>"
 ```
 
@@ -55,12 +55,11 @@ python3 test_imports.py
 python3 -m pytest -q utils/test_security_baseline.py
 ```
 
-## 审计与安全门控（要点）
+## 控制面边界（v1.1.x）
 
 - 所有控制动作（approve/revise/resume/cancel）必须走 `scripts/control.py`。
-- 认证默认开启：未鉴权请求应返回 401/403。
-- 支持关键敏感信息脱敏：token、authorization、api_key、password、cookie、email。
-- 建议在 `.env` 设置：`ORCH_AUTH_ENABLED=1`，并配置 `ORCH_CONTROL_TOKEN`。
+- `scripts/control.py` 是本地 CLI 控制路径，不提供 `--token` 鉴权参数。
+- 当前信任边界是“本机 shell 用户”；如需远程控制鉴权，计划在 `v1.2.x+` 增强。
 
 ## 相关文档
 

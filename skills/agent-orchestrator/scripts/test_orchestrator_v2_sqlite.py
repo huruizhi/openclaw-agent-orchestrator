@@ -32,7 +32,7 @@ def test_audit_approve_then_execute(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["control.py", "--project-id", "p1", "approve", job["job_id"]])
     assert control.main() == 0
 
-    def _fake_run(goal, audit_gate, timeout_seconds, heartbeat_cb=None):
+    def _fake_run(goal, audit_gate, timeout_seconds, heartbeat_cb=None, **kwargs):
         return {"status": "completed", "run_id": "r1", "orchestration": {"summary": {"done": 1, "total_tasks": 1}}}
 
     monkeypatch.setattr(worker, "_run_goal_subprocess", _fake_run)

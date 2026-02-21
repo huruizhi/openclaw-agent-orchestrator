@@ -25,10 +25,14 @@ cp .env.example .env
 |----------|---------|-------------|
 | `OPENCLAW_AGENT_TIMEOUT_SECONDS` | `600` | Single task dispatch timeout |
 | `ORCH_WORKER_JOB_TIMEOUT_SECONDS` | `2400` | Per-job hard timeout |
-| `ORCH_MAIN_HEARTBEAT_SECONDS` | `180` | Main channel progress heartbeat interval |
 | `ORCH_RUNNING_STALE_SECONDS` | `300` | Stale running detection / auto-recovery threshold |
 | `ORCH_HEARTBEAT_LOG_SECONDS` | `30` | Queue heartbeat event log interval |
+| `ORCH_WORKER_MAX_CONCURRENCY` | `2` | Max jobs processed in parallel per worker |
 | `ORCH_MAX_PARALLEL_TASKS` | `2` | Max concurrent ready tasks dispatched to sub-agents |
+
+Notes:
+- `ORCH_AGENT_MAX_CONCURRENCY` is still accepted as a legacy alias for `ORCH_WORKER_MAX_CONCURRENCY`.
+- Runtime/doc default sync can be checked with `python3 scripts/check_runtime_defaults.py`.
 
 ### Example .env
 

@@ -10,6 +10,11 @@ import threading
 import time
 from pathlib import Path
 
+from runtime_defaults import (
+    get_running_stale_seconds,
+    get_worker_job_timeout_seconds,
+    get_worker_max_concurrency,
+)
 from state_store import LEASE_SECONDS, MAX_ATTEMPTS, STALE_TIMEOUT_SECONDS, StateStore, load_env
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -178,20 +183,22 @@ def _execute_job(store: StateStore, job_id: str, worker_id: str, timeout_seconds
 
 
 def main() -> int:
+    load_env()
     p = argparse.ArgumentParser(description="Background worker for orchestrator queue")
     p.add_argument("--project-id", help="project id for queue isolation")
     p.add_argument("--once", action="store_true", help="process one pass and exit")
     p.add_argument("--interval", type=float, default=2.0, help="poll interval seconds")
-    p.add_argument("--job-timeout", type=int, default=int(os.getenv("ORCH_WORKER_JOB_TIMEOUT_SECONDS", "2400")), help="per-job hard timeout seconds")
-    p.add_argument("--max-concurrency", type=int, default=int(os.getenv("ORCH_AGENT_MAX_CONCURRENCY", "2")), help="max jobs processed in parallel per worker")
+    p.add_argument("--job-timeout", type=int, default=get_worker_job_timeout_seconds(), help="per-job hard timeout seconds")
+    p.add_argument("--max-concurrency", type=int, default=get_worker_max_concurrency(), help="max jobs processed in parallel per worker")
+    p.add_argument("--stale-timeout", type=int, default=get_running_stale_seconds(), help="stale running detection seconds")
     args = p.parse_args()
 
-    load_env()
     worker_id = f"worker-{os.getpid()}"
     store = StateStore(args.project_id)
 
     while True:
-        store.recover_stale_jobs(stale_timeout=STALE_TIMEOUT_SECONDS)
+        stale_timeout = max(1, int(args.stale_timeout or STALE_TIMEOUT_SECONDS))
+        store.recover_stale_jobs(stale_timeout=stale_timeout)
         claimed = store.claim_jobs(worker_id=worker_id, limit=max(1, int(args.max_concurrency)), lease_seconds=LEASE_SECONDS)
 
         threads: list[threading.Thread] = []
