@@ -625,32 +625,34 @@ def run_workflow(goal: str, base_url: str, api_key: str):
             f"report={report_path}; artifacts={report.get('artifacts_dir', str(artifacts_dir))}"
         )
 
-        if final_status == "finished":
-            notifier.notify(
-                "main",
-                "workflow_finished",
-                {
-                    "run_id": run_id,
-                    "project_id": project_id,
-                    "summary": summary,
-                    "report_path": report_path,
-                    "artifacts_dir": report.get("artifacts_dir", str(artifacts_dir)),
-                    "message": completion_message,
-                },
-            )
-        else:
-            notifier.notify(
-                "main",
-                "workflow_failed",
-                {
-                    "run_id": run_id,
-                    "project_id": project_id,
-                    "summary": summary,
-                    "report_path": report_path,
-                    "artifacts_dir": report.get("artifacts_dir", str(artifacts_dir)),
-                    "message": completion_message,
-                },
-            )
+        completion_payload = {
+            "run_id": run_id,
+            "project_id": project_id,
+            "summary": summary,
+            "report_path": report_path,
+            "artifacts_dir": report.get("artifacts_dir", str(artifacts_dir)),
+            "message": completion_message,
+        }
+
+        # v1.1-P1 fallback: if normal completion notify fails, persist fallback and retry once.
+        try:
+            if final_status == "finished":
+                notifier.notify("main", "workflow_finished", completion_payload)
+            else:
+                notifier.notify("main", "workflow_failed", completion_payload)
+        except Exception as notify_err:
+            fallback_path = Path(report.get("artifacts_dir", str(artifacts_dir))) / "completion_fallback.json"
+            fallback_payload = {
+                **completion_payload,
+                "fallback": True,
+                "notify_error": str(notify_err),
+            }
+            fallback_path.parent.mkdir(parents=True, exist_ok=True)
+            fallback_path.write_text(json.dumps(fallback_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            try:
+                notifier.notify("main", "workflow_result_fallback", fallback_payload)
+            except Exception:
+                pass
 
         return {
             **result,
