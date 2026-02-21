@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from jsonschema import ValidationError, validate
+
 try:
     from .llm import llm_assign
 except ImportError:
@@ -8,6 +10,7 @@ except ImportError:
 
 
 _AGENTS = None
+_ROUTING_RULES = None
 
 
 def _load_agents() -> dict:
@@ -18,6 +21,36 @@ def _load_agents() -> dict:
     return _AGENTS
 
 
+def _load_routing_schema() -> dict:
+    schema_path = Path(__file__).parent.parent / "schemas" / "routing_rules.schema.json"
+    with open(schema_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _validate_routing_rules(rules: dict, valid_agents: set[str]) -> None:
+    try:
+        validate(instance=rules, schema=_load_routing_schema())
+    except ValidationError as e:
+        raise ValueError(f"Invalid routing_rules.json: {e.message}") from e
+
+    for i, rule in enumerate(rules.get("hard_rules", [])):
+        agent = str(rule.get("agent", "")).strip()
+        if agent not in valid_agents:
+            raise ValueError(
+                f"Invalid routing_rules.json: hard_rules[{i}].agent='{agent}' is not in agents.json"
+            )
+
+
+def _load_routing_rules(valid_agents: set[str]) -> dict:
+    global _ROUTING_RULES
+    if _ROUTING_RULES is None:
+        with open(Path(__file__).parent / "routing_rules.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+        _validate_routing_rules(data, valid_agents)
+        _ROUTING_RULES = data
+    return _ROUTING_RULES
+
+
 def _is_valid_confidence(value) -> bool:
     try:
         v = float(value)
@@ -26,31 +59,28 @@ def _is_valid_confidence(value) -> bool:
     return 0.0 <= v <= 1.0
 
 
-def _hard_rule_assign(task: dict) -> tuple[str, str] | None:
-    """P1-01: hard rules before LLM.
-
-    If task text clearly indicates a known domain, route immediately.
-    """
+def _hard_rule_assign(task: dict, valid_agents: set[str]) -> tuple[str, str] | None:
+    """Hard-rule routing from routing_rules.json before LLM routing."""
     title = str(task.get("title", "")).lower()
     desc = str(task.get("description", "")).lower()
     text = f"{title}\n{desc}"
 
-    rules = [
-        ("work", ["github", "issue", "milestone", "collect", "fetch", "status report"]),
-        ("code", ["implement", "fix", "refactor", "patch", "code", "开发", "实现", "修复"]),
-        ("test", ["test", "pytest", "regression", "ci", "验证", "回归"]),
-        ("lab", ["browser", "twitter", "x.com", "web automation", "scrape"]),
-    ]
-
-    for agent, keywords in rules:
-        if any(k in text for k in keywords):
+    rules = (_load_routing_rules(valid_agents).get("hard_rules") or [])
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        agent = str(rule.get("agent", "")).strip()
+        if not agent or agent not in valid_agents:
+            continue
+        keywords = rule.get("keywords") or []
+        if any(str(k).lower() in text for k in keywords):
             return agent, f"hard_rule:{agent}"
     return None
 
 
 def assign_agents(tasks_dict: dict) -> dict:
     """Routing policy:
-    1) Hard rules first (P1-01)
+    1) Hard rules from routing_rules.json
     2) LLM routing when no hard rule hit
     3) fallback default
     """
@@ -67,7 +97,7 @@ def assign_agents(tasks_dict: dict) -> dict:
         description = str(task.get("description", ""))
         cache_key = title + "\n" + description
 
-        hard = _hard_rule_assign(task)
+        hard = _hard_rule_assign(task, agent_names)
         if hard and hard[0] in agent_names:
             assigned, reason = hard
         elif cache_key in cache:

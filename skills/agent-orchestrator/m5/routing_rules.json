@@ -1,0 +1,35 @@
+{
+  "version": "1.0",
+  "hard_rules": [
+    {
+      "agent": "work",
+      "keywords": [
+        "github",
+        "pull request",
+        "pr",
+        "issue",
+        "milestone",
+        "release",
+        "repository",
+        "repo",
+        "github actions",
+        "workflow run",
+        "collect",
+        "fetch",
+        "status report"
+      ]
+    },
+    {
+      "agent": "code",
+      "keywords": ["implement", "fix", "refactor", "patch", "code", "开发", "实现", "修复"]
+    },
+    {
+      "agent": "test",
+      "keywords": ["test", "pytest", "regression", "ci", "验证", "回归"]
+    },
+    {
+      "agent": "lab",
+      "keywords": ["browser", "twitter", "x.com", "web automation", "scrape"]
+    }
+  ]
+}

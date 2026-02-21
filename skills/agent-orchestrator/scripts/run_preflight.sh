@@ -37,6 +37,7 @@ if [[ ! -f .env ]]; then
 fi
 
 run_check "import test" "$PYTHON_BIN" test_imports.py
+run_check "routing rules validation" "$PYTHON_BIN" scripts/validate_routing_rules.py
 run_check "m2 decompose tests" "$PYTHON_BIN" m2/test_decompose.py
 run_check "m6 scheduler tests" "$PYTHON_BIN" m6/test_scheduler.py
 run_check "m7 executor tests" "$PYTHON_BIN" m7/test_executor.py
