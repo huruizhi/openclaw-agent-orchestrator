@@ -129,14 +129,18 @@ class Executor:
 
     def _expected_output_paths(self, task: dict) -> list[Path]:
         outputs = task.get("outputs", []) or []
+        task_id = str(task.get("id", "")).strip() or str(task.get("task_id", "")).strip()
         paths: list[Path] = []
         for raw in outputs:
             name = str(raw or "").strip()
             if not name:
                 continue
-            # Keep artifact exchange deterministic across agents.
+            # Keep artifact exchange deterministic across agents and isolate by task.
             fname = Path(name).name
-            paths.append(self.artifacts_dir / fname)
+            if task_id:
+                paths.append(self.artifacts_dir / task_id / fname)
+            else:
+                paths.append(self.artifacts_dir / fname)
         return paths
 
     def _validate_task_outputs(self, task: dict) -> tuple[bool, list[str]]:

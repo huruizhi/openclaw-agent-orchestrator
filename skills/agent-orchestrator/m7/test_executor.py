@@ -220,3 +220,12 @@ if __name__ == "__main__":
     test_executor_safe_wrapper_get_runnable_error()
     test_executor_safe_wrapper_start_task_error()
     test_executor_safe_wrapper_finish_task_error()
+
+
+def test_expected_output_paths_are_task_scoped(tmp_path):
+    ex = Executor(FakeScheduler([]), FakeAdapter([]), SessionWatcher(FakeAdapter([])), state_store=FakeStateStore(), artifacts_dir=str(tmp_path))
+    task = {"id": "task-40", "outputs": ["README.md", "output.json"]}
+    paths = ex._expected_output_paths(task)
+    assert str(paths[0]) == str(Path(tmp_path) / "task-40" / "README.md")
+    assert str(paths[1]) == str(Path(tmp_path) / "task-40" / "output.json")
+    print("✓ task-scoped artifact paths test passed")
