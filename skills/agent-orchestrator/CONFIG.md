@@ -109,3 +109,6 @@ LLM_MODEL=claude-3-opus-20240229
 - Installation: `INSTALL.md`
 - Quick flow: `QUICKSTART.md`
 - Operations / recovery / notifications: `OPERATIONS.md`
+
+# Issue #42
+Output validation defaults: non-empty output check and optional JSON schema check can be enabled via executor config.

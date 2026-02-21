@@ -78,3 +78,7 @@ python3 -m pytest -q utils/test_security_baseline.py
 ## Issue #41 Terminal completion protocol
 
 Execution terminal events now include structured terminal status metadata via `task_terminal` notifications: `task_completed`, `task_failed`, `task_waiting` with `terminal_state` and `status_protocol`.
+
+## Issue #42 Output quality gate
+
+Before a task transitions to terminal success state, the executor should validate: required outputs exist, content non-empty, and optional freshness/schema checks. This enables deterministic downstream quality gates.
