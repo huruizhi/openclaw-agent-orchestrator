@@ -77,3 +77,9 @@ python3 scripts/audit_timeline.py --job-id <job_id>
 - 关键命令通过：`status`, `approve`, `resume`, `audit_timeline`
 - 控制面文档与实现一致（本地 CLI 控制，无 `--token` 参数）
 - 关键测试通过：`utils/test_security_baseline.py`
+
+## v1.2.0 Release Gate Checklist
+
+- Canary validation: execute representative workflow on non-prod project_id and verify events/status convergence.
+- Rollback trigger: if canary fails acceptance, revert merge commits for v1.2.0 PRs and re-run smoke tests.
+- Evidence artifacts: attach test_report.md, acceptance_evidence.md, and rollback dry-run notes.
