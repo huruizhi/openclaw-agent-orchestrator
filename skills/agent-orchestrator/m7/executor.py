@@ -33,6 +33,26 @@ class Executor:
             return
         self.state_store.update(task_id, status, error=error)
 
+    def _standard_error(self, error_code: str, root_cause: str, impact: str, recovery_plan: str) -> dict:
+        return {
+            "error_code": error_code,
+            "root_cause": root_cause,
+            "impact": impact,
+            "recovery_plan": recovery_plan,
+        }
+
+    def _safe_call(self, op_name: str, fn, *args, **kwargs):
+        try:
+            return True, fn(*args, **kwargs), None
+        except Exception as e:
+            err = self._standard_error(
+                error_code=f"EXECUTOR_SAFE_WRAPPER_{op_name.upper()}_ERROR",
+                root_cause=f"{type(e).__name__}: {e}",
+                impact=f"{op_name} failed; scheduler/executor flow may be partially advanced",
+                recovery_plan=f"Check scheduler state and retry {op_name} or mark related task as failed",
+            )
+            return False, None, err
+
     def _release_task_session(self, task_id: str, session: str | None) -> None:
         if session:
             self.adapter.mark_session_idle(session)
@@ -168,7 +188,14 @@ class Executor:
 
         while not self.scheduler.is_finished():
             progressed = False
-            runnable = self.scheduler.get_runnable_tasks()
+            ok_runnable, runnable, runnable_err = self._safe_call("get_runnable_tasks", self.scheduler.get_runnable_tasks)
+            if not ok_runnable:
+                return {
+                    "status": "failed",
+                    "waiting": self.waiting_tasks,
+                    "error": runnable_err,
+                    "convergence_report": self._convergence_report(tasks_by_id),
+                }
             available_slots = max(0, self.max_parallel_tasks - len(self.task_to_session))
             if available_slots == 0 and runnable:
                 self._notify({}, "", "parallel_throttled", message="parallel slots exhausted")
@@ -177,7 +204,15 @@ class Executor:
 
                 if self.adapter.is_session_idle(session):
                     self.adapter.mark_session_busy(session)
-                    self.scheduler.start_task(task_id)
+                    ok_start, _, start_err = self._safe_call("start_task", self.scheduler.start_task, task_id)
+                    if not ok_start:
+                        self.adapter.mark_session_idle(session)
+                        return {
+                            "status": "failed",
+                            "waiting": self.waiting_tasks,
+                            "error": start_err,
+                            "convergence_report": self._convergence_report(tasks_by_id),
+                        }
                     self.task_retry_count[task_id] += 1
                     self.started_count += 1
                     self.agent_stats[str(agent or "unassigned")]["started"] += 1
@@ -195,7 +230,15 @@ class Executor:
                         self.adapter.send_message(session, prompt)
                     except Exception as e:
                         # Dispatch failure should fail the task fast (no global hang).
-                        self.scheduler.finish_task(task_id, False)
+                        ok_finish, _, finish_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, False)
+                        if not ok_finish:
+                            self._release_task_session(task_id, session)
+                            return {
+                                "status": "failed",
+                                "waiting": self.waiting_tasks,
+                                "error": finish_err,
+                                "convergence_report": self._convergence_report(tasks_by_id),
+                            }
                         self._record_task_end(task_id, False, tasks_by_id)
                         self._set_task_state(task_id, "failed", error=f"dispatch failed: {e}")
                         self._notify(
@@ -224,7 +267,15 @@ class Executor:
                     if result["type"] == "done":
                         ok, missing = self._validate_task_outputs(task)
                         if not ok:
-                            self.scheduler.finish_task(task_id, False)
+                            ok_finish, _, finish_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, False)
+                            if not ok_finish:
+                                self._release_task_session(task_id, session)
+                                return {
+                                    "status": "failed",
+                                    "waiting": self.waiting_tasks,
+                                    "error": finish_err,
+                                    "convergence_report": self._convergence_report(tasks_by_id),
+                                }
                             self._record_task_end(task_id, False, tasks_by_id)
                             self._set_task_state(task_id, "failed", error=f"missing outputs: {', '.join(missing)}")
                             self._notify(
@@ -234,7 +285,15 @@ class Executor:
                                 error=f"missing outputs: {', '.join(missing)}",
                             )
                         else:
-                            self.scheduler.finish_task(task_id, True)
+                            ok_finish, _, finish_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, True)
+                            if not ok_finish:
+                                self._release_task_session(task_id, session)
+                                return {
+                                    "status": "failed",
+                                    "waiting": self.waiting_tasks,
+                                    "error": finish_err,
+                                    "convergence_report": self._convergence_report(tasks_by_id),
+                                }
                             self._record_task_end(task_id, True, tasks_by_id)
                             self._set_task_state(task_id, "completed")
                             self._notify(tasks_by_id, task_id, "task_completed")
@@ -246,7 +305,15 @@ class Executor:
                         break
 
                     if result["type"] == "failed":
-                        self.scheduler.finish_task(task_id, False)
+                        ok_finish, _, finish_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, False)
+                        if not ok_finish:
+                            self._release_task_session(task_id, session)
+                            return {
+                                "status": "failed",
+                                "waiting": self.waiting_tasks,
+                                "error": finish_err,
+                                "convergence_report": self._convergence_report(tasks_by_id),
+                            }
                         self._record_task_end(task_id, False, tasks_by_id)
                         self._set_task_state(task_id, "failed")
                         self._notify(tasks_by_id, task_id, "task_failed")
@@ -279,7 +346,15 @@ class Executor:
             if running_tasks and (time.monotonic() - last_progress_at) >= idle_timeout_seconds:
                 for task_id in running_tasks:
                     session = self.task_to_session.get(task_id)
-                    self.scheduler.finish_task(task_id, False)
+                    ok_finish, _, finish_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, False)
+                    if not ok_finish:
+                        self._release_task_session(task_id, session)
+                        return {
+                            "status": "failed",
+                            "waiting": self.waiting_tasks,
+                            "error": finish_err,
+                            "convergence_report": self._convergence_report(tasks_by_id),
+                        }
                     self._record_task_end(task_id, False, tasks_by_id)
                     self._set_task_state(task_id, "failed", error=f"idle timeout after {idle_timeout_seconds}s")
                     self._notify(
