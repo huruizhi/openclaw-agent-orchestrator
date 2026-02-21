@@ -46,3 +46,7 @@ python3 -m pytest -q utils/test_security_baseline.py
 - 控制命令与当前实现保持一致（不包含 `--token`）
 - 审计查询（job/run 级）可重放
 - 关键回归测试可复现通过
+
+## Issue #43 Waiting-human behavior
+
+`waiting_human` is expected to be local-task scoped so unrelated tasks can continue in parallel when independent dependencies are ready.
