@@ -82,3 +82,7 @@ Execution terminal events now include structured terminal status metadata via `t
 ## Issue #42 Output quality gate
 
 Before a task transitions to terminal success state, the executor should validate: required outputs exist, content non-empty, and optional freshness/schema checks. This enables deterministic downstream quality gates.
+
+## Issue #45 Release gate
+
+Release workflow for v1.2.0: run issues 40-44 in canary first, validate convergence report and structured terminal evidence, then promote artifact set. Rollback playbook keeps last known-good artifact namespace and clears partial outputs per task.
