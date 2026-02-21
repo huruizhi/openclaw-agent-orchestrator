@@ -358,8 +358,13 @@ def _build_audit_gate_payload(*, status: str, job_id: str, run_id: str, goal: st
     }
     required = ["status", "job_id", "run_id", "goal", "impact_scope", "risk_items", "command_preview", "user_instruction"]
     missing = [k for k in required if not str(payload.get(k, "")).strip()]
-    if missing:
-        raise RuntimeError(f"audit template invalid, missing fields: {','.join(missing)}")
+
+    # Hard rule: never send an audit message with missing fields.
+    # If a field is unavailable, mark UNKNOWN and keep the 7-item template intact.
+    for key in missing:
+        payload[key] = f"UNKNOWN (missing {key})"
+
+    payload["missing_fields"] = missing
     return payload
 
 
