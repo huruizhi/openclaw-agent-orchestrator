@@ -135,3 +135,10 @@
 ## Issue #44 Failure classification matrix
 
 Standardize failure classes (`transient`, `logic`, `resource`, `human`) with structured recovery suggestions and impact notes in terminal payloads.
+
+
+## v1.2.0 Release runtime semantics
+- waiting_human scope is local-per-task via `scheduler.pause_task`; non-dependent tasks may continue in parallel.
+- failure classification fields: `failure_class` + `retryable` are included in terminal failures.
+- output validation gates: presence non-empty freshness/schema can be enabled with environment: `ORCH_OUTPUT_VALIDATE_NON_EMPTY`, `ORCH_OUTPUT_VALIDATE_FRESHNESS`, `ORCH_OUTPUT_VALIDATE_JSON`.
+- runbook helper: execute `python scripts/canary_gate.py --run-id <id> --artifacts-dir <dir>` after convergence; if blocked, trigger `scripts/rollback_release.sh`.

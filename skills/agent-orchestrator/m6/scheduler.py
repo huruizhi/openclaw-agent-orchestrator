@@ -12,6 +12,7 @@ class Scheduler:
         self.running: set[str] = set()
         self.done: set[str] = set()
         self.failed: set[str] = set()
+        self.waiting: set[str] = set()
 
         for task_id in self.tasks:
             if self.remaining_deps[task_id] == 0:
@@ -33,9 +34,27 @@ class Scheduler:
         self.ready.remove(task_id)
         self.running.add(task_id)
 
+
+    def pause_task(self, task_id: str) -> None:
+        """Mark task as waiting for human input while preserving graph state."""
+        if task_id in self.running:
+            self.running.remove(task_id)
+        if task_id in self.ready:
+            self.ready.remove(task_id)
+        self.waiting.add(task_id)
+
+    def resume_task(self, task_id: str) -> None:
+        """Resume a previously waiting task."""
+        if task_id not in self.waiting:
+            return
+        self.waiting.remove(task_id)
+        if task_id in self.done or task_id in self.failed:
+            return
+        self.ready.add(task_id)
+
     def _cascade_fail(self, task_id: str) -> None:
         for child_id in self.graph.get(task_id, []):
-            if child_id in self.done or child_id in self.failed:
+            if child_id in self.done or child_id in self.failed or child_id in self.waiting:
                 continue
             if child_id in self.running:
                 self.running.remove(child_id)

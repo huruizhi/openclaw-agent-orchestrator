@@ -1,12 +1,18 @@
 import os
 import time
+import json
+import shutil
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 from .parser import parse_messages
 
 
 class Executor:
+    TERMINAL_PROTOCOL_VERSION = "v2"
+    TERMINAL_EVENTS = {"task_completed", "task_failed", "task_waiting"}
+
     def __init__(self, scheduler, adapter, watcher, artifacts_dir: str | None = None, state_store=None):
         self.scheduler = scheduler
         self.adapter = adapter
@@ -28,38 +34,116 @@ class Executor:
         self.artifacts_dir = Path(artifacts_dir or os.getenv("ORCH_ARTIFACTS_DIR", "./workspace/artifacts"))
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
 
+        self.compat_protocol = os.getenv("ORCH_TERMINAL_COMPAT", "1").strip() != "0"
+        self.validate_non_empty = os.getenv("ORCH_OUTPUT_VALIDATE_NON_EMPTY", "0") == "1"
+        self.validate_freshness = os.getenv("ORCH_OUTPUT_VALIDATE_FRESHNESS", "0") == "1"
+        self.validate_json_schema = os.getenv("ORCH_OUTPUT_VALIDATE_JSON", "0") == "1"
+        self.output_max_age_min = max(1, int(os.getenv("ORCH_OUTPUT_MAX_AGE_MINUTES", "120")))
+        self.max_retries_transient = int(os.getenv("ORCH_FAILURE_RETRY_TRANSIENT", "2"))
+        self.max_retries_logic = int(os.getenv("ORCH_FAILURE_RETRY_LOGIC", "0"))
+
     def _set_task_state(self, task_id: str, status: str, error: str | None = None) -> None:
         if self.state_store is None:
             return
         self.state_store.update(task_id, status, error=error)
 
-    def _standard_error(self, error_code: str, root_cause: str, impact: str, recovery_plan: str) -> dict:
+    def _classify_error(self, err: BaseException, op_name: str) -> dict[str, Any]:
+        reason = f"{type(err).__name__}: {err}"
+        lower = reason.lower()
+        if "timeout" in lower or "timed out" in lower:
+            failure_class = "transient"
+            retryable = True
+            recovery = "Retry with a short backoff."
+        elif "permission" in lower or "auth" in lower:
+            failure_class = "logic"
+            retryable = False
+            recovery = "Fix credentials/ACL and rerun."
+        elif "network" in lower or "connection" in lower:
+            failure_class = "resource"
+            retryable = True
+            recovery = "Requeue task after infra check."
+        elif "human" in lower:
+            failure_class = "human_reject"
+            retryable = False
+            recovery = "Manual intervention required in review."
+        else:
+            failure_class = "logic"
+            retryable = False
+            recovery = "Inspect operator instruction and task payload."
+
+        return {
+            "failure_class": failure_class,
+            "retryable": retryable,
+            "error_code": f"EXECUTOR_SAFE_WRAPPER_{op_name.upper()}_ERROR",
+            "root_cause": reason,
+            "impact": f"{op_name} failed; runtime flow may be partially advanced",
+            "recovery_plan": recovery,
+        }
+
+    def _standard_error(self, error_code: str, root_cause: str, impact: str, recovery_plan: str, failure_class: str | None = None, retryable: bool = False) -> dict:
         return {
             "error_code": error_code,
             "root_cause": root_cause,
             "impact": impact,
             "recovery_plan": recovery_plan,
+            "failure_class": failure_class or "logic",
+            "retryable": retryable,
         }
 
     def _safe_call(self, op_name: str, fn, *args, **kwargs):
         try:
             return True, fn(*args, **kwargs), None
         except Exception as e:
+            cls = self._classify_error(e, op_name)
             err = self._standard_error(
-                error_code=f"EXECUTOR_SAFE_WRAPPER_{op_name.upper()}_ERROR",
-                root_cause=f"{type(e).__name__}: {e}",
-                impact=f"{op_name} failed; scheduler/executor flow may be partially advanced",
-                recovery_plan=f"Check scheduler state and retry {op_name} or mark related task as failed",
+                error_code=cls["error_code"],
+                root_cause=cls["root_cause"],
+                impact=cls["impact"],
+                recovery_plan=cls["recovery_plan"],
+                failure_class=cls["failure_class"],
+                retryable=cls["retryable"],
             )
             return False, None, err
 
-    def _release_task_session(self, task_id: str, session: str | None) -> None:
+    def _release_task_session(self, task_id: str, session: str | None, *, keep_waiting_meta: bool = False) -> None:
         if session:
             self.adapter.mark_session_idle(session)
             self.watcher.unwatch(session)
             self.session_to_task.pop(session, None)
         self.task_to_session.pop(task_id, None)
-        self.waiting_tasks.pop(task_id, None)
+        if not keep_waiting_meta:
+            self.waiting_tasks.pop(task_id, None)
+
+    def _failure_retry_policy(self, failure_class: str) -> dict[str, Any]:
+        if failure_class == "transient":
+            return {"retryable": True, "max_retries": self.max_retries_transient}
+        if failure_class == "resource":
+            return {"retryable": True, "max_retries": 1}
+        if failure_class == "logic":
+            return {"retryable": self.max_retries_logic > 0, "max_retries": self.max_retries_logic}
+        return {"retryable": False, "max_retries": 0}
+
+    def _build_terminal_payload(self, task: dict, event: str, extras: dict | None = None) -> dict:
+        failure = (task.get("error") or {}).copy() if isinstance(task.get("error"), dict) else {}
+        payload = {
+            "run_id": self.run_id,
+            "task_id": str(task.get("id") or task.get("task_id") or ""),
+            "title": str(task.get("title", "")),
+            "status_protocol": self.TERMINAL_PROTOCOL_VERSION,
+            "event": event,
+            "terminal_state": {
+                "task_completed": "completed",
+                "task_failed": "failed",
+                "task_waiting": "waiting_human",
+            }.get(event, "unknown"),
+            "compat_mode": self.compat_protocol,
+            "failure": failure,
+        }
+        policy = self._failure_retry_policy(str(failure.get("failure_class", "logic")))
+        payload.update({"retry_policy": policy})
+        if extras:
+            payload.update(extras)
+        return payload
 
     def _notify(self, tasks_by_id: dict, task_id: str, event: str, **extra) -> None:
         notifier = self.notifier
@@ -67,12 +151,16 @@ class Executor:
             return
         task = tasks_by_id.get(task_id, {})
         agent = str(task.get("assigned_to") or "unassigned")
-        payload = {
+        payload: dict[str, Any] = {
             "run_id": self.run_id,
             "task_id": task_id,
             "title": str(task.get("title", "")),
+            "agent": agent,
             **extra,
         }
+        if event in self.TERMINAL_EVENTS:
+            payload = self._build_terminal_payload(task, event, payload)
+
         notifier.notify(agent, event, payload)
         if event in {"task_failed", "task_waiting"} and agent != "main":
             notifier.notify("main", event, {**payload, "source_agent": agent})
@@ -83,6 +171,9 @@ class Executor:
         inputs = task.get("inputs", []) or []
         outputs = task.get("outputs", []) or []
         done_when = task.get("done_when", []) or []
+        task_id = str(task.get("id", "")).strip() or str(task.get("task_id", "")).strip()
+
+        task_artifacts_dir = self.artifacts_dir / task_id if task_id else self.artifacts_dir
 
         lines = [
             "You are executing a task from a workflow engine.",
@@ -108,10 +199,12 @@ class Executor:
             [
                 "",
                 f"Shared artifacts directory for this workflow: {self.artifacts_dir}",
+                f"Task-scoped artifacts directory (MUST use for this task): {task_artifacts_dir}",
                 "Rules:",
                 "- Prefer existing skills/capabilities first; avoid manual ad-hoc flows when a skill path exists.",
-                "- Write every declared output file into the shared artifacts directory.",
-                "- If an input refers to an artifact filename, read it from the shared artifacts directory.",
+                "- Write every declared output file into the TASK-SCOPED artifacts directory above.",
+                "- Never write required outputs to workflow root artifacts dir when a task-scoped dir is provided.",
+                "- If an input refers to an artifact filename, first read from task-scoped dir, then workflow shared dir if needed.",
                 "- Use exact output filenames from Required Outputs whenever possible.",
                 "- Request user input only when strictly necessary and unavailable via configured tools/skills.",
                 "",
@@ -143,12 +236,47 @@ class Executor:
                 paths.append(self.artifacts_dir / fname)
         return paths
 
+    def _is_fresh_output(self, path: Path) -> bool:
+        if not self.validate_freshness:
+            return True
+        if not path.exists():
+            return False
+        age_minutes = (time.time() - path.stat().st_mtime) / 60
+        return age_minutes <= self.output_max_age_min
+
     def _validate_task_outputs(self, task: dict) -> tuple[bool, list[str]]:
         expected = self._expected_output_paths(task)
         if not expected:
             return True, []
-        missing = [str(p) for p in expected if not p.exists()]
-        return len(missing) == 0, missing
+
+        issues: list[str] = []
+        for p in expected:
+            if not p.exists():
+                # Recovery: adopt uniquely-matched misplaced artifact into expected task-scoped path.
+                candidates = [c for c in self.artifacts_dir.rglob(p.name) if c.is_file() and c != p]
+                if len(candidates) == 1:
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        shutil.move(str(candidates[0]), str(p))
+                    except Exception:
+                        issues.append(f"missing:{p}")
+                        continue
+                else:
+                    issues.append(f"missing:{p}")
+                    continue
+            if self.validate_non_empty and p.stat().st_size == 0:
+                issues.append(f"empty:{p}")
+                continue
+            if self.validate_freshness and not self._is_fresh_output(p):
+                issues.append(f"stale:{p}")
+                continue
+            if self.validate_json_schema and p.suffix.lower() == ".json":
+                try:
+                    json.loads(p.read_text())
+                except Exception as e:
+                    issues.append(f"invalid_json:{p}:{e}")
+
+        return len(issues) == 0, issues
 
     def _record_task_end(self, task_id: str, success: bool, tasks_by_id: dict) -> None:
         started = self.task_started_at.pop(task_id, None)
@@ -184,6 +312,8 @@ class Executor:
             "blocked": blocked,
             "blocked_by": {tid: list((tasks_by_id.get(tid) or {}).get("deps", []) or []) for tid in blocked},
             "max_parallel_tasks": self.max_parallel_tasks,
+            "protocol": self.TERMINAL_PROTOCOL_VERSION,
+            "compat_protocol": self.compat_protocol,
         }
 
     def run(self, tasks_by_id: dict) -> dict:
@@ -233,7 +363,6 @@ class Executor:
                     try:
                         self.adapter.send_message(session, prompt)
                     except Exception as e:
-                        # Dispatch failure should fail the task fast (no global hang).
                         ok_finish, _, finish_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, False)
                         if not ok_finish:
                             self._release_task_session(task_id, session)
@@ -253,65 +382,41 @@ class Executor:
                         )
                         self._release_task_session(task_id, session)
                         progressed = True
-                        last_progress_at = time.monotonic()
-                        continue
 
-            events = self.watcher.poll_events()
-
-            for event in events:
-                session = event["session_id"]
-                if session not in self.session_to_task:
+            # Watch active sessions and resolve outputs.
+            active_sessions = list(self.task_to_session.values())
+            for session in active_sessions:
+                messages = self.watcher.drain(session)
+                if not messages:
+                    continue
+                task_id = self.session_to_task.get(session)
+                if not task_id:
+                    continue
+                parsed_events = parse_messages("\n".join(messages))
+                if not parsed_events:
                     continue
 
-                task_id = self.session_to_task[session]
-                task = tasks_by_id.get(task_id, {})
-                results = parse_messages(event.get("messages", []))
-
-                for result in results:
-                    if result["type"] == "done":
-                        ok, missing = self._validate_task_outputs(task)
-                        if not ok:
-                            ok_finish, _, finish_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, False)
-                            if not ok_finish:
-                                self._release_task_session(task_id, session)
-                                return {
-                                    "status": "failed",
-                                    "waiting": self.waiting_tasks,
-                                    "error": finish_err,
-                                    "convergence_report": self._convergence_report(tasks_by_id),
-                                }
-                            self._record_task_end(task_id, False, tasks_by_id)
-                            self._set_task_state(task_id, "failed", error=f"missing outputs: {', '.join(missing)}")
-                            self._notify(
-                                tasks_by_id,
-                                task_id,
-                                "task_failed",
-                                error=f"missing outputs: {', '.join(missing)}",
-                            )
-                        else:
-                            ok_finish, _, finish_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, True)
-                            if not ok_finish:
-                                self._release_task_session(task_id, session)
-                                return {
-                                    "status": "failed",
-                                    "waiting": self.waiting_tasks,
-                                    "error": finish_err,
-                                    "convergence_report": self._convergence_report(tasks_by_id),
-                                }
-                            self._record_task_end(task_id, True, tasks_by_id)
-                            self._set_task_state(task_id, "completed")
-                            self._notify(tasks_by_id, task_id, "task_completed")
-                            self._notify(tasks_by_id, task_id, "parallel_completed")
-
-                        self._release_task_session(task_id, session)
-                        progressed = True
-                        last_progress_at = time.monotonic()
-                        break
-
-                    if result["type"] == "failed":
+                for ev in parsed_events:
+                    progressed = True
+                    etype = ev.get("type")
+                    payload_text = ev.get("payload")
+                    if isinstance(payload_text, (dict, list)):
+                        try:
+                            payload_text = json.dumps(payload_text)
+                        except Exception:
+                            payload_text = str(payload_text)
+                    parse_err = ev.get("error")
+                    if etype == "malformed":
                         ok_finish, _, finish_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, False)
+                        err = self._standard_error(
+                            error_code="MALFORMED_PAYLOAD",
+                            root_cause=str(payload_text or parse_err),
+                            impact="protocol malformed, task stopped",
+                            recovery_plan="Ask agent to emit valid [TASK_DONE]/[TASK_FAILED]/[TASK_WAITING]",
+                            failure_class="logic",
+                            retryable=False,
+                        )
                         if not ok_finish:
-                            self._release_task_session(task_id, session)
                             return {
                                 "status": "failed",
                                 "waiting": self.waiting_tasks,
@@ -319,59 +424,88 @@ class Executor:
                                 "convergence_report": self._convergence_report(tasks_by_id),
                             }
                         self._record_task_end(task_id, False, tasks_by_id)
-                        self._set_task_state(task_id, "failed")
-                        self._notify(tasks_by_id, task_id, "task_failed")
+                        self._set_task_state(task_id, "failed", error="Malformed terminal payload")
+                        self._notify(tasks_by_id, task_id, "task_failed", error=err)
                         self._release_task_session(task_id, session)
-                        progressed = True
-                        last_progress_at = time.monotonic()
-                        break
+                        continue
 
-                    if result["type"] == "waiting":
-                        question = result.get("question", "")
-                        self.waiting_tasks[task_id] = question
-                        self._set_task_state(task_id, "waiting_human")
-                        self._notify(
-                            tasks_by_id,
-                            task_id,
-                            "task_waiting",
-                            question=question,
-                            message=f"[TASK_WAITING] {question}",
+                    if etype == "done":
+                        ok_finish, _, finish_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, True)
+                        if not ok_finish:
+                            return {
+                                "status": "failed",
+                                "waiting": self.waiting_tasks,
+                                "error": finish_err,
+                                "convergence_report": self._convergence_report(tasks_by_id),
+                            }
+                        valid, details = self._validate_task_outputs(tasks_by_id[task_id])
+                        if not valid:
+                            ok_fail, _, fail_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, False)
+                            if not ok_fail:
+                                return {
+                                    "status": "failed",
+                                    "waiting": self.waiting_tasks,
+                                    "error": fail_err,
+                                    "convergence_report": self._convergence_report(tasks_by_id),
+                                }
+                            self._record_task_end(task_id, False, tasks_by_id)
+                            self._set_task_state(task_id, "failed", error=f"output validation failed: {', '.join(details)}")
+                            self._notify(tasks_by_id, task_id, "task_failed", error=f"output validation failed: {', '.join(details)}")
+                            self._release_task_session(task_id, session)
+                            continue
+
+                        self._record_task_end(task_id, True, tasks_by_id)
+                        self._set_task_state(task_id, "completed")
+                        self._notify(tasks_by_id, task_id, "task_completed")
+                        self._release_task_session(task_id, session)
+
+                    elif etype == "failed":
+                        ok_finish, _, finish_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, False)
+                        if not ok_finish:
+                            return {
+                                "status": "failed",
+                                "waiting": self.waiting_tasks,
+                                "error": finish_err,
+                                "convergence_report": self._convergence_report(tasks_by_id),
+                            }
+                        failure = self._standard_error(
+                            error_code="TASK_SIGNAL_FAILED",
+                            root_cause=payload_text or "agent reported failure",
+                            impact="agent task failed",
+                            recovery_plan="Fix root cause and rerun task",
+                            failure_class="logic",
+                            retryable=False,
                         )
-                        return {
-                            "status": "waiting",
-                            "waiting": self.waiting_tasks,
-                            "convergence_report": self._convergence_report(tasks_by_id),
-                        }
-
-            if not runnable and not events and not getattr(self.scheduler, "running", set()) and not progressed:
-                raise RuntimeError("Executor stalled: no runnable tasks and no incoming events")
-
-            running_tasks = list(getattr(self.scheduler, "running", set()))
-            if running_tasks and (time.monotonic() - last_progress_at) >= idle_timeout_seconds:
-                for task_id in running_tasks:
-                    session = self.task_to_session.get(task_id)
-                    ok_finish, _, finish_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, False)
-                    if not ok_finish:
+                        self._record_task_end(task_id, False, tasks_by_id)
+                        self._set_task_state(task_id, "failed", error=failure["root_cause"])
+                        self._notify(tasks_by_id, task_id, "task_failed", error=failure)
                         self._release_task_session(task_id, session)
-                        return {
-                            "status": "failed",
-                            "waiting": self.waiting_tasks,
-                            "error": finish_err,
-                            "convergence_report": self._convergence_report(tasks_by_id),
-                        }
-                    self._record_task_end(task_id, False, tasks_by_id)
-                    self._set_task_state(task_id, "failed", error=f"idle timeout after {idle_timeout_seconds}s")
-                    self._notify(
-                        tasks_by_id,
-                        task_id,
-                        "task_failed",
-                        error=f"idle timeout after {idle_timeout_seconds}s",
-                    )
-                    self._release_task_session(task_id, session)
-                last_progress_at = time.monotonic()
+
+                    elif etype == "waiting":
+                        # Localized waiting: do not block unrelated tasks in the same run.
+                        question = ev.get("question") or payload_text or ""
+                        self.waiting_tasks[task_id] = question
+                        if hasattr(self.scheduler, "pause_task"):
+                            self.scheduler.pause_task(task_id)
+                        self._set_task_state(task_id, "waiting_human", error=None)
+                        self._notify(tasks_by_id, task_id, "task_waiting", question=question)
+                        # Keep session clean so other tasks can reuse resources.
+                        self._release_task_session(task_id, session, keep_waiting_meta=True)
+
+            if not progressed:
+                if time.monotonic() - last_progress_at > idle_timeout_seconds:
+                    return {
+                        "status": "waiting" if self.waiting_tasks else "stalled",
+                        "waiting": self.waiting_tasks,
+                        "error": {
+                            "error_code": "RUNNER_IDLE_TIMEOUT",
+                            "root_cause": f"no task progress for {idle_timeout_seconds}s",
+                        },
+                        "convergence_report": self._convergence_report(tasks_by_id),
+                    }
 
         return {
             "status": "finished",
-            "waiting": {},
+            "waiting": self.waiting_tasks,
             "convergence_report": self._convergence_report(tasks_by_id),
         }
