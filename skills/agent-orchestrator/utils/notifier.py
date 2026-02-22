@@ -22,7 +22,7 @@ from .logger import get_logger, setup_logging, ExtraAdapter
 
 setup_logging()
 logger = ExtraAdapter(get_logger(__name__), {"module": "NOTIFIER"})
-MENTION_PREFIX = "@rzhu"
+MENTION_PREFIX = os.getenv("ORCH_MENTION_PREFIX", "@rzhu").strip()
 
 
 class AgentChannelNotifier:
@@ -150,6 +150,8 @@ class AgentChannelNotifier:
     @staticmethod
     def _with_mention(message: str) -> str:
         text = str(message or "").strip()
+        if not MENTION_PREFIX:
+            return text
         if not text:
             return MENTION_PREFIX
         if text.startswith(MENTION_PREFIX):
