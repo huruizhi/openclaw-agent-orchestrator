@@ -103,30 +103,43 @@ def _assert_std_error(err: dict):
         assert k in err
 
 
+def _done_payload(run_id: str, task_id: str) -> str:
+    return "[TASK_DONE] " + json.dumps({"event": "done", "type": "done", "run_id": run_id, "task_id": task_id})
+
+
+def _waiting_payload(run_id: str, task_id: str, question: str) -> str:
+    return "[TASK_WAITING] " + json.dumps({"event": "waiting", "type": "waiting", "run_id": run_id, "task_id": task_id, "question": question})
+
+
 def test_parse_messages_markers():
     msgs = [
         {"role": "assistant", "content": "[TASK_DONE]"},
         {"role": "assistant", "content": "[TASK_FAILED]"},
-        {"role": "assistant", "content": "[TASK_WAITING] {\"question\": \"who are you?\"}"},
+        {"role": "assistant", "content": "[TASK_WAITING] {\"event\": \"waiting\", \"type\": \"waiting\", \"run_id\": \"\", \"task_id\": \"\", \"question\": \"who are you?\"}"},
         {"role": "assistant", "content": "noise [TASK_DONE]"},
     ]
     out = parse_messages(msgs)
     assert out == [
         {"type": "done"},
         {"type": "failed"},
-        {"type": "waiting", "question": "who are you?"},
+        {
+            "type": "waiting",
+            "question": "who are you?",
+            "payload": {"question": "who are you?", "event": "waiting", "type": "waiting", "run_id": "", "task_id": ""},
+        },
     ]
     print("✓ M7 parser markers test passed")
 
 
 def test_executor_done_flow():
     scheduler = FakeScheduler([[('agent_a', 't1')], []])
+    store = FakeStateStore()
     adapter = FakeAdapter([
-        [{"role": "assistant", "content": "[TASK_DONE]"}],
+        [{"role": "assistant", "content": "[TASK_DONE] {\"event\": \"done\", \"type\": \"done\", \"run_id\": \"run_xxx\", \"task_id\": \"t1\"}"}],
     ])
     watcher = SessionWatcher(adapter)
-    store = FakeStateStore()
     executor = Executor(scheduler, adapter, watcher, state_store=store)
+    executor.run_id = "run_xxx"
 
     tasks_by_id = {"t1": {"id": "t1", "title": "Task One"}}
     result = executor.run(tasks_by_id)
@@ -145,12 +158,11 @@ def test_executor_done_flow():
 
 def test_executor_waiting_flow():
     scheduler = FakeScheduler([[('agent_a', 't1')], []])
-    adapter = FakeAdapter([
-        [{"role": "assistant", "content": "[TASK_WAITING] {\"question\": \"provide repo url\"}"}],
-    ])
+    adapter = FakeAdapter([[{"role": "assistant", "content": _waiting_payload("run_xxx", "t1", "provide repo url")}]])
     watcher = SessionWatcher(adapter)
     store = FakeStateStore()
     executor = Executor(scheduler, adapter, watcher, state_store=store)
+    executor.run_id = "run_xxx"
 
     tasks_by_id = {"t1": {"id": "t1", "title": "Task One"}}
     result = executor.run(tasks_by_id)
@@ -167,11 +179,12 @@ def test_executor_sets_running_before_send():
     scheduler = FakeScheduler([[('agent_a', 't1')], []])
     store = FakeStateStore()
     adapter = AssertStartBeforeSendAdapter(
-        poll_script=[[{"role": "assistant", "content": "[TASK_DONE]"}]],
+        poll_script=[[{"role": "assistant", "content": _done_payload("run_xxx", "t1")}]],
         state_store=store,
     )
     watcher = SessionWatcher(adapter)
     executor = Executor(scheduler, adapter, watcher, state_store=store)
+    executor.run_id = "run_xxx"
 
     tasks_by_id = {"t1": {"id": "t1", "title": "Task One"}}
     result = executor.run(tasks_by_id)
@@ -205,7 +218,7 @@ def test_executor_safe_wrapper_start_task_error():
 
 def test_executor_safe_wrapper_finish_task_error():
     scheduler = BoomFinishScheduler([[('agent_a', 't1')]])
-    adapter = FakeAdapter([[{"role": "assistant", "content": "[TASK_DONE]"}]])
+    adapter = FakeAdapter([[{"role": "assistant", "content": _done_payload("run_xxx", "t1")} ]])
     watcher = SessionWatcher(adapter)
     executor = Executor(scheduler, adapter, watcher)
     result = executor.run({"t1": {"id": "t1", "title": "Task One"}})
@@ -236,7 +249,7 @@ def test_expected_output_paths_are_task_scoped(tmp_path):
 def test_executor_generates_task_context_and_writes_hash(tmp_path):
     task = {"id": "task-55", "title": "Issue55", "outputs": ["out.txt"]}
     scheduler = FakeScheduler([[('agent_a', 'task-55')], []])
-    adapter = FakeAdapter([[{"role": "assistant", "content": "[TASK_DONE]"}]])
+    adapter = FakeAdapter([[{"role": "assistant", "content": _done_payload("run_xxx", "task-55")} ]])
     watcher = SessionWatcher(adapter)
     store = FakeStateStore()
     ex = Executor(scheduler, adapter, watcher, artifacts_dir=str(tmp_path), state_store=store)
@@ -256,7 +269,7 @@ def test_executor_generates_task_context_and_writes_hash(tmp_path):
 def test_executor_task_context_tamper_rejects(tmp_path):
     task = {"id": "task-55", "title": "Issue55", "outputs": ["out.txt"]}
     scheduler = FakeScheduler([[('agent_a', 'task-55')], []])
-    adapter = FakeAdapter([[{"role": "assistant", "content": "[TASK_DONE]"}]])
+    adapter = FakeAdapter([[{"role": "assistant", "content": _done_payload("run_xxx", "task-55")} ]])
     watcher = SessionWatcher(adapter)
     ex = Executor(scheduler, adapter, watcher, artifacts_dir=str(tmp_path), state_store=FakeStateStore())
     ex.run_id = "run_xxx"
@@ -279,7 +292,7 @@ def test_executor_context_hmac_key_required_flag_default_off(tmp_path):
     # default behavior: not required unless explicit opt-in
     task = {"id": "task-55", "title": "Issue55", "outputs": []}
     scheduler = FakeScheduler([[('agent_a', 'task-55')], []])
-    adapter = FakeAdapter([[{"role": "assistant", "content": "[TASK_DONE]"}]])
+    adapter = FakeAdapter([[{"role": "assistant", "content": _done_payload("run_xxx", "task-55")} ]])
     watcher = SessionWatcher(adapter)
 
     prev = os.environ.get("TASK_CONTEXT_HMAC_KEY_REQUIRED")
@@ -304,7 +317,7 @@ def test_executor_fails_without_hmac_key_when_required(tmp_path):
     os.environ.pop("TASK_CONTEXT_HMAC_KEY", None)
 
     scheduler = FakeScheduler([[('agent_a', 'task-55')], []])
-    adapter = FakeAdapter([[{"role": "assistant", "content": "[TASK_DONE]"}]])
+    adapter = FakeAdapter([[{"role": "assistant", "content": _done_payload("run_xxx", "task-55")} ]])
     watcher = SessionWatcher(adapter)
 
     try:
@@ -333,7 +346,7 @@ def test_executor_signs_context_with_required_hmac(tmp_path):
     os.environ["TASK_CONTEXT_HMAC_KEY"] = "x-secret"
 
     scheduler = FakeScheduler([[('agent_a', 'task-55')], []])
-    adapter = FakeAdapter([[{"role": "assistant", "content": "[TASK_DONE]"}]])
+    adapter = FakeAdapter([[{"role": "assistant", "content": _done_payload("run_xxx", "task-55")} ]])
     watcher = SessionWatcher(adapter)
 
     ex = Executor(scheduler, adapter, watcher, artifacts_dir=str(tmp_path), state_store=FakeStateStore())
@@ -434,3 +447,49 @@ def test_executor_rejects_unsafe_recovery_source_path(tmp_path):
     ok, issues = ex._validate_task_outputs(task)
     assert ok is False
     assert any("invalid_recovery_source_path" in i or "unsafe_recovery_source_path" in i for i in issues)
+
+
+def test_executor_rejects_missing_terminal_required_fields(tmp_path):
+    scheduler = FakeScheduler([[('agent_a', 'issue-76')], []])
+    adapter = FakeAdapter([
+        [{"role": "assistant", "content": "[TASK_DONE] {\"event\": \"done\", \"type\": \"done\", \"run_id\": \"run_xxx\"}"}]
+    ])
+    watcher = SessionWatcher(adapter)
+    store = FakeStateStore()
+    ex = Executor(scheduler, adapter, watcher, artifacts_dir=str(tmp_path), state_store=store)
+    ex.run_id = "run_xxx"
+
+    result = ex.run({"issue-76": {"id": "issue-76", "title": "Issue 76"}})
+
+    assert result["status"] == "finished"
+    assert store.updates[-1][1] == "failed"
+    assert "missing terminal fields" in str(store.updates[-1][2]) or "task_id mismatch" in str(store.updates[-1][2]) or "terminal payload must be object" in str(store.updates[-1][2])
+
+
+def test_executor_rejects_terminal_task_id_mismatch(tmp_path):
+    scheduler = FakeScheduler([[('agent_a', 'issue-76')], []])
+    adapter = FakeAdapter([[{"role": "assistant", "content": _done_payload("run_xxx", "other-task") }]])
+    watcher = SessionWatcher(adapter)
+    store = FakeStateStore()
+    ex = Executor(scheduler, adapter, watcher, artifacts_dir=str(tmp_path), state_store=store)
+    ex.run_id = "run_xxx"
+
+    result = ex.run({"issue-76": {"id": "issue-76", "title": "Issue 76"}})
+    assert result["status"] == "finished"
+    assert store.updates[-1][1] == "failed"
+    assert "terminal payload mismatch" in str(store.updates[-1][2]) or "task_id mismatch" in str(store.updates[-1][2])
+
+
+def test_executor_rejects_terminal_type_mismatch(tmp_path):
+    scheduler = FakeScheduler([[('agent_a', 'issue-76')], []])
+    payload = json.dumps({"event": "done", "type": "failed", "run_id": "run_xxx", "task_id": "issue-76", "error": "bad"})
+    adapter = FakeAdapter([[{"role": "assistant", "content": f"[TASK_DONE] {payload}"}]])
+    watcher = SessionWatcher(adapter)
+    store = FakeStateStore()
+    ex = Executor(scheduler, adapter, watcher, artifacts_dir=str(tmp_path), state_store=store)
+    ex.run_id = "run_xxx"
+
+    result = ex.run({"issue-76": {"id": "issue-76", "title": "Issue 76"}})
+    assert result["status"] == "finished"
+    assert store.updates[-1][1] == "failed"
+    assert "type mismatch" in str(store.updates[-1][2])

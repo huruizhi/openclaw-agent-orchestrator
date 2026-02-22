@@ -1,6 +1,6 @@
 from pathlib import Path
-import os
 import sys
+import json
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -10,10 +10,11 @@ from m7.watcher import SessionWatcher
 
 
 class MultiAdapter:
-    def __init__(self):
+    def __init__(self, task_order):
         self.busy = set()
         self.sent = []
         self.count = 0
+        self._task_queue = list(task_order)
 
     def ensure_session(self, agent_name):
         self.count += 1
@@ -33,8 +34,11 @@ class MultiAdapter:
         return "m"
 
     def poll_messages(self, session_id):
-        # all tasks complete immediately
-        return [{"role": "assistant", "content": "[TASK_DONE]"}]
+        if not self._task_queue:
+            return [{"role": "assistant", "content": '[TASK_DONE] {"event":"done","type":"done","run_id":"run_xxx","task_id":"unknown"}'}]
+        task_id = self._task_queue.pop(0)
+        payload = json.dumps({"event": "done", "type": "done", "run_id": "run_xxx", "task_id": task_id})
+        return [{"role": "assistant", "content": f"[TASK_DONE] {payload}"}]
 
 
 def test_parallel_limit_respected(monkeypatch):
@@ -49,9 +53,10 @@ def test_parallel_limit_respected(monkeypatch):
     }
 
     scheduler = Scheduler(graph, in_degree, tasks)
-    adapter = MultiAdapter()
+    adapter = MultiAdapter(["a", "b", "c"])
     watcher = SessionWatcher(adapter)
     ex = Executor(scheduler, adapter, watcher)
+    ex.run_id = "run_xxx"
 
     result = ex.run(tasks)
     assert result["status"] == "finished"
@@ -69,9 +74,10 @@ def test_convergence_report_fields(monkeypatch):
     tasks = {"a": {"id": "a", "assigned_to": "agent"}}
 
     scheduler = Scheduler(graph, in_degree, tasks)
-    adapter = MultiAdapter()
+    adapter = MultiAdapter(["a"])
     watcher = SessionWatcher(adapter)
     ex = Executor(scheduler, adapter, watcher)
+    ex.run_id = "run_xxx"
 
     result = ex.run(tasks)
     report = result["convergence_report"]

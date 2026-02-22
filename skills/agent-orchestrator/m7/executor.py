@@ -345,6 +345,36 @@ class Executor:
                 }
         return None
 
+    def _validate_terminal_payload(self, task_id: str, event: str, payload: object) -> tuple[bool, str | None]:
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                return False, "terminal payload must be JSON object"
+
+        if not isinstance(payload, dict):
+            return False, "terminal payload must be object with fields event/type/run_id/task_id"
+
+        required = {"event", "type", "run_id", "task_id"}
+        missing = [field for field in sorted(required) if field not in payload]
+        if missing:
+            return False, f"missing terminal fields: {','.join(missing)}"
+
+        terminal_event = str(payload.get("event"))
+        terminal_type = str(payload.get("type"))
+        payload_run_id = str(payload.get("run_id") or "")
+        payload_task_id = str(payload.get("task_id") or "")
+
+        if terminal_event != event:
+            return False, f"event mismatch: expected {event}, got {terminal_event}"
+        if terminal_type != event:
+            return False, f"type mismatch: expected {event}, got {terminal_type}"
+        if payload_task_id != task_id:
+            return False, f"task_id mismatch: expected {task_id}, got {payload_task_id}"
+        if payload_run_id != self.run_id:
+            return False, f"run_id mismatch: expected {self.run_id}, got {payload_run_id}"
+        return True, None
+
     def _validate_task_outputs(self, task: dict) -> tuple[bool, list[str]]:
         expected = self._expected_output_paths(task)
         task_id = str(task.get("id") or task.get("task_id") or "").strip()
@@ -571,6 +601,31 @@ class Executor:
                         self._terminal_resolved.add(task_id)
                         self._record_task_end(task_id, False, tasks_by_id)
                         self._set_task_state(task_id, "failed", error="Malformed terminal payload")
+                        self._notify(tasks_by_id, task_id, "task_failed", error=err)
+                        self._release_task_session(task_id, session)
+                        continue
+
+                    terminal_ok, terminal_err = self._validate_terminal_payload(task_id, etype, payload_text)
+                    if not terminal_ok:
+                        ok_finish, _, finish_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, False)
+                        err = self._standard_error(
+                            error_code="MALFORMED_PAYLOAD",
+                            root_cause=terminal_err,
+                            impact="terminal payload schema mismatch",
+                            recovery_plan="Re-emit terminal signal with required fields event/type/run_id/task_id and task-consistent ids",
+                            failure_class="logic",
+                            retryable=False,
+                        )
+                        if not ok_finish:
+                            return {
+                                "status": "failed",
+                                "waiting": self.waiting_tasks,
+                                "error": finish_err,
+                                "convergence_report": self._convergence_report(tasks_by_id),
+                            }
+                        self._terminal_resolved.add(task_id)
+                        self._record_task_end(task_id, False, tasks_by_id)
+                        self._set_task_state(task_id, "failed", error=terminal_err)
                         self._notify(tasks_by_id, task_id, "task_failed", error=err)
                         self._release_task_session(task_id, session)
                         continue
