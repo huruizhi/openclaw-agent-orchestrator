@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import json
 import shutil
@@ -345,6 +346,30 @@ class Executor:
                 }
         return None
 
+    @staticmethod
+    def _normalize_artifact_name(name: str) -> str:
+        base = Path(str(name or "")).name.lower().strip()
+        stem = Path(base).stem
+        return re.sub(r"[^a-z0-9]+", "_", stem).strip("_")
+
+    def _resolve_output_path(self, expected_path: Path) -> Path:
+        if expected_path.exists():
+            return expected_path
+        task_dir = expected_path.parent
+        if not task_dir.exists() or not task_dir.is_dir():
+            return expected_path
+
+        expected_norm = self._normalize_artifact_name(expected_path.name)
+        if not expected_norm:
+            return expected_path
+
+        for cand in task_dir.iterdir():
+            if not cand.is_file():
+                continue
+            if self._normalize_artifact_name(cand.name) == expected_norm:
+                return cand
+        return expected_path
+
     def _validate_terminal_payload(self, task_id: str, event: str, payload: object) -> tuple[bool, str | None]:
         if isinstance(payload, str):
             s = payload.strip()
@@ -416,7 +441,8 @@ class Executor:
 
         issues: list[str] = []
         for p in expected:
-            if not p.exists():
+            resolved = self._resolve_output_path(p)
+            if not resolved.exists():
                 recovery = self._find_recovery_mapping(task, p.name)
                 if not recovery:
                     issues.append(f"missing:{p}")
@@ -443,6 +469,7 @@ class Executor:
                 try:
                     p.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(str(source_file), str(p))
+                    resolved = p
                 except Exception as exc:
                     issues.append(f"recovery_failed:{p}:{exc}")
                     continue
@@ -467,17 +494,17 @@ class Executor:
                     status="recovered",
                 )
 
-            if self.validate_non_empty and p.stat().st_size == 0:
-                issues.append(f"empty:{p}")
+            if self.validate_non_empty and resolved.stat().st_size == 0:
+                issues.append(f"empty:{resolved}")
                 continue
-            if self.validate_freshness and not self._is_fresh_output(p):
-                issues.append(f"stale:{p}")
+            if self.validate_freshness and not self._is_fresh_output(resolved):
+                issues.append(f"stale:{resolved}")
                 continue
-            if self.validate_json_schema and p.suffix.lower() == ".json":
+            if self.validate_json_schema and resolved.suffix.lower() == ".json":
                 try:
-                    json.loads(p.read_text())
+                    json.loads(resolved.read_text())
                 except Exception as e:
-                    issues.append(f"invalid_json:{p}:{e}")
+                    issues.append(f"invalid_json:{resolved}:{e}")
 
         return len(issues) == 0, issues
 

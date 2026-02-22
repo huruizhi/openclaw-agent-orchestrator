@@ -406,6 +406,24 @@ def test_executor_recovers_output_via_explicit_mapping(tmp_path):
     assert any(item.get("task_id") == task_id and item.get("source_task_id") == source_task_id for item in ex._artifact_recovery_events)
 
 
+def test_executor_accepts_slugged_output_filename(tmp_path):
+    scheduler = FakeScheduler([])
+    adapter = FakeAdapter([])
+    watcher = SessionWatcher(adapter)
+    ex = Executor(scheduler, adapter, watcher, artifacts_dir=str(tmp_path), state_store=FakeStateStore())
+
+    task_id = "task-75"
+    task_dir = tmp_path / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    # Agent writes a path-safe slug instead of a human-readable output name.
+    (task_dir / "access_details_and_repo_metadata.md").write_text("ok", encoding="utf-8")
+
+    task = {"id": task_id, "outputs": ["Access details and repo metadata"], "artifact_recoveries": []}
+    ok, issues = ex._validate_task_outputs(task)
+    assert ok is True
+    assert issues == []
+
+
 def test_executor_rejects_missing_recovery_mapping_when_output_missing(tmp_path):
     scheduler = FakeScheduler([])
     adapter = FakeAdapter([])
