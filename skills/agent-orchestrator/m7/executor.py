@@ -347,10 +347,17 @@ class Executor:
 
     def _validate_terminal_payload(self, task_id: str, event: str, payload: object) -> tuple[bool, str | None]:
         if isinstance(payload, str):
-            try:
-                payload = json.loads(payload)
-            except Exception:
-                return False, "terminal payload must be JSON object"
+            s = payload.strip()
+            if not s and self.compat_protocol:
+                payload = {}
+            else:
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    return False, "terminal payload must be JSON object"
+
+        if payload is None and self.compat_protocol:
+            payload = {}
 
         if not isinstance(payload, dict):
             return False, "terminal payload must be object with fields event/type/run_id/task_id"

@@ -484,6 +484,20 @@ def test_executor_accepts_legacy_terminal_payload_in_compat_mode(tmp_path):
     assert store.updates[-1][1] == "completed"
 
 
+def test_executor_accepts_empty_terminal_payload_in_compat_mode(tmp_path):
+    scheduler = FakeScheduler([[('agent_a', 'issue-76')], []])
+    adapter = FakeAdapter([[{"role": "assistant", "content": "[TASK_DONE]"}]])
+    watcher = SessionWatcher(adapter)
+    store = FakeStateStore()
+    ex = Executor(scheduler, adapter, watcher, artifacts_dir=str(tmp_path), state_store=store)
+    ex.run_id = "run_xxx"
+    ex.compat_protocol = True
+
+    result = ex.run({"issue-76": {"id": "issue-76", "title": "Issue 76"}})
+    assert result["status"] == "finished"
+    assert store.updates[-1][1] == "completed"
+
+
 def test_executor_accepts_terminal_event_alias_in_compat_mode(tmp_path):
     scheduler = FakeScheduler([[('agent_a', 'issue-76')], []])
     payload = json.dumps({"event": "task_completed", "type": "task_completed", "run_id": "run_xxx", "task_id": "issue-76"})
