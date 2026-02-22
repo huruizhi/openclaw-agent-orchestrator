@@ -273,3 +273,86 @@ def test_executor_task_context_tamper_rejects(tmp_path):
     ok, err = ex._validate_task_context("task-55")
     assert ok is False
     assert err in {"CONTEXT_HASH_MISMATCH", "CONTEXT_SIGNATURE_INVALID"}
+
+
+def test_executor_context_hmac_key_required_flag_default_off(tmp_path):
+    # default behavior: not required unless explicit opt-in
+    task = {"id": "task-55", "title": "Issue55", "outputs": []}
+    scheduler = FakeScheduler([[('agent_a', 'task-55')], []])
+    adapter = FakeAdapter([[{"role": "assistant", "content": "[TASK_DONE]"}]])
+    watcher = SessionWatcher(adapter)
+
+    prev = os.environ.get("TASK_CONTEXT_HMAC_KEY_REQUIRED")
+    os.environ.pop("TASK_CONTEXT_HMAC_KEY_REQUIRED", None)
+    try:
+        ex = Executor(scheduler, adapter, watcher, artifacts_dir=str(tmp_path), state_store=FakeStateStore())
+        ex.run_id = "run_xxx"
+        assert ex.context_hmac_key == ""
+        out = ex.run({"task-55": task})
+        assert out["status"] == "finished"
+    finally:
+        if prev is None:
+            os.environ.pop("TASK_CONTEXT_HMAC_KEY_REQUIRED", None)
+        else:
+            os.environ["TASK_CONTEXT_HMAC_KEY_REQUIRED"] = prev
+
+
+def test_executor_fails_without_hmac_key_when_required(tmp_path):
+    prev_req = os.environ.get("TASK_CONTEXT_HMAC_KEY_REQUIRED")
+    prev_key = os.environ.get("TASK_CONTEXT_HMAC_KEY")
+    os.environ["TASK_CONTEXT_HMAC_KEY_REQUIRED"] = "1"
+    os.environ.pop("TASK_CONTEXT_HMAC_KEY", None)
+
+    scheduler = FakeScheduler([[('agent_a', 'task-55')], []])
+    adapter = FakeAdapter([[{"role": "assistant", "content": "[TASK_DONE]"}]])
+    watcher = SessionWatcher(adapter)
+
+    try:
+        try:
+            Executor(scheduler, adapter, watcher, artifacts_dir=str(tmp_path), state_store=FakeStateStore())
+        except RuntimeError as e:
+            assert "TASK_CONTEXT_HMAC_KEY is required" in str(e)
+        else:
+            raise AssertionError("expected RuntimeError when TASK_CONTEXT_HMAC_KEY missing")
+    finally:
+        if prev_req is None:
+            os.environ.pop("TASK_CONTEXT_HMAC_KEY_REQUIRED", None)
+        else:
+            os.environ["TASK_CONTEXT_HMAC_KEY_REQUIRED"] = prev_req
+        if prev_key is None:
+            os.environ.pop("TASK_CONTEXT_HMAC_KEY", None)
+        else:
+            os.environ["TASK_CONTEXT_HMAC_KEY"] = prev_key
+
+
+def test_executor_signs_context_with_required_hmac(tmp_path):
+    task = {"id": "task-55", "title": "Issue55", "outputs": ["a.txt"]}
+    prev_req = os.environ.get("TASK_CONTEXT_HMAC_KEY_REQUIRED")
+    prev_key = os.environ.get("TASK_CONTEXT_HMAC_KEY")
+    os.environ["TASK_CONTEXT_HMAC_KEY_REQUIRED"] = "1"
+    os.environ["TASK_CONTEXT_HMAC_KEY"] = "x-secret"
+
+    scheduler = FakeScheduler([[('agent_a', 'task-55')], []])
+    adapter = FakeAdapter([[{"role": "assistant", "content": "[TASK_DONE]"}]])
+    watcher = SessionWatcher(adapter)
+
+    ex = Executor(scheduler, adapter, watcher, artifacts_dir=str(tmp_path), state_store=FakeStateStore())
+    ex.run_id = "run_xxx"
+
+    out = ex.run({"task-55": task})
+    assert out["status"] == "finished"
+
+    data = json.loads((tmp_path / "task-55" / "task_context.json").read_text(encoding="utf-8"))
+    assert data.get("context_sig")
+    ok, err = ex._validate_task_context("task-55")
+    assert ok is True
+    assert err is None
+
+    if prev_req is None:
+        os.environ.pop("TASK_CONTEXT_HMAC_KEY_REQUIRED", None)
+    else:
+        os.environ["TASK_CONTEXT_HMAC_KEY_REQUIRED"] = prev_req
+    if prev_key is None:
+        os.environ.pop("TASK_CONTEXT_HMAC_KEY", None)
+    else:
+        os.environ["TASK_CONTEXT_HMAC_KEY"] = prev_key
