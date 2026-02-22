@@ -45,7 +45,11 @@ def _parse_line(line: str) -> dict | None:
         if etype == "waiting":
             if not isinstance(payload, dict) or not isinstance(payload.get("question"), str):
                 return {"type": "malformed", "marker": marker, "error": "waiting payload must be object with question:string"}
-            return {"type": "waiting", "question": payload.get("question", "")}
+            return {
+                "type": "waiting",
+                "question": payload.get("question", ""),
+                "payload": payload,
+            }
 
         if not isinstance(payload, dict):
             return {"type": "malformed", "marker": marker, "error": "payload must be JSON object"}
