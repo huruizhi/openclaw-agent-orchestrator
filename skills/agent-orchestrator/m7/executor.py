@@ -45,7 +45,10 @@ class Executor:
         self.max_retries_transient = int(os.getenv("ORCH_FAILURE_RETRY_TRANSIENT", "2"))
         self.max_retries_logic = int(os.getenv("ORCH_FAILURE_RETRY_LOGIC", "0"))
         self._dedupe_failures: dict[str, str] = {}
+        self.task_context_hmac_required = os.getenv("TASK_CONTEXT_HMAC_KEY_REQUIRED", "false").strip().lower() in {"1", "true", "yes", "on", "prod", "production"}
         self.context_hmac_key = os.getenv("TASK_CONTEXT_HMAC_KEY", "")
+        if self.task_context_hmac_required and not self.context_hmac_key.strip():
+            raise RuntimeError("TASK_CONTEXT_HMAC_KEY is required for runtime context verification")
         self.allow_implicit_output_automove = os.getenv("ORCH_OUTPUT_ALLOW_IMPLICIT_AUTOMOVE", "0") == "1"
         self._terminal_resolved: set[str] = set()
 
