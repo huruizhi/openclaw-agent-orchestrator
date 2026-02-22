@@ -55,3 +55,40 @@ def test_writer_writes_and_updates_manifest(tmp_path):
     assert out["status"] == "ok"
     data = json.loads((tmp_path / "task-55" / "outputs_manifest.json").read_text(encoding="utf-8"))
     assert any(x.get("filename") == "out.txt" for x in data)
+
+
+def test_writer_recovered_file_from_source_task(tmp_path):
+    context = _base_ctx(tmp_path)
+    data = json.loads(Path(context).read_text(encoding='utf-8'))
+    data["artifacts_root"] = str(tmp_path)
+    context.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
+
+    source_task = tmp_path / "task-74"
+    source_task.mkdir(parents=True, exist_ok=True)
+    src = source_task / "artifact.txt"
+    src.write_text("hello", encoding='utf-8')
+
+    out = aw.write_recovered_file(context, "artifact.txt", "task-74", "artifact.txt", "handoff")
+    assert out["status"] == "ok"
+    assert out["source_task_id"] == "task-74"
+    dest = tmp_path / "task-55" / "artifact.txt"
+    assert dest.exists()
+    assert dest.read_text(encoding='utf-8') == "hello"
+
+
+def test_writer_recovered_file_rejects_unsafe_path(tmp_path):
+    context = _base_ctx(tmp_path)
+    data = json.loads(Path(context).read_text(encoding='utf-8'))
+    data["artifacts_root"] = str(tmp_path)
+    context.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
+
+    source_task = tmp_path / "task-74"
+    source_task.mkdir(parents=True, exist_ok=True)
+    src = source_task / "artifact.txt"
+    src.write_text("hello", encoding='utf-8')
+
+    try:
+        aw.write_recovered_file(context, "artifact.txt", "task-74", "../artifact.txt", "bad")
+        assert False, "should raise"
+    except ValueError:
+        assert True

@@ -356,3 +356,81 @@ def test_executor_signs_context_with_required_hmac(tmp_path):
         os.environ.pop("TASK_CONTEXT_HMAC_KEY", None)
     else:
         os.environ["TASK_CONTEXT_HMAC_KEY"] = prev_key
+
+
+def test_executor_recovers_output_via_explicit_mapping(tmp_path):
+    task_id = "task-75"
+    source_task_id = "task-74"
+
+    source_dir = tmp_path / source_task_id
+    source_dir.mkdir(parents=True, exist_ok=True)
+    src = source_dir / "artifact.txt"
+    src.write_text("recovered", encoding="utf-8")
+
+    scheduler = FakeScheduler([])
+    adapter = FakeAdapter([])
+    watcher = SessionWatcher(adapter)
+    ex = Executor(scheduler, adapter, watcher, artifacts_dir=str(tmp_path), state_store=FakeStateStore())
+
+    task = {
+        "id": task_id,
+        "outputs": ["artifact.txt"],
+        "artifact_recoveries": [
+            {
+                "target_filename": "artifact.txt",
+                "source_task_id": source_task_id,
+                "source_path": "artifact.txt",
+                "reason": "handoff from stable preprocessor",
+            }
+        ],
+    }
+    ok, issues = ex._validate_task_outputs(task)
+    assert ok is True
+    assert issues == []
+    recovered_path = ex.artifacts_dir / task_id / "artifact.txt"
+    assert recovered_path.exists()
+    assert recovered_path.read_text(encoding="utf-8") == "recovered"
+    assert any(item.get("task_id") == task_id and item.get("source_task_id") == source_task_id for item in ex._artifact_recovery_events)
+
+
+def test_executor_rejects_missing_recovery_mapping_when_output_missing(tmp_path):
+    scheduler = FakeScheduler([])
+    adapter = FakeAdapter([])
+    watcher = SessionWatcher(adapter)
+    ex = Executor(scheduler, adapter, watcher, artifacts_dir=str(tmp_path), state_store=FakeStateStore())
+
+    task = {"id": "task-75", "outputs": ["artifact.txt"], "artifact_recoveries": []}
+    ok, issues = ex._validate_task_outputs(task)
+    assert ok is False
+    assert any(i.startswith("missing:") for i in issues)
+
+
+def test_executor_rejects_unsafe_recovery_source_path(tmp_path):
+    task_id = "task-75"
+    source_task_id = "task-74"
+
+    source_dir = tmp_path / source_task_id
+    source_dir.mkdir(parents=True, exist_ok=True)
+    src = source_dir / "artifact.txt"
+    src.write_text("recovered", encoding="utf-8")
+
+    scheduler = FakeScheduler([])
+    adapter = FakeAdapter([])
+    watcher = SessionWatcher(adapter)
+    ex = Executor(scheduler, adapter, watcher, artifacts_dir=str(tmp_path), state_store=FakeStateStore())
+
+    task = {
+        "id": task_id,
+        "outputs": ["artifact.txt"],
+        "artifact_recoveries": [
+            {
+                "target_filename": "artifact.txt",
+                "source_task_id": source_task_id,
+                "source_path": "../artifact.txt",
+                "reason": "unsafe traversal",
+            }
+        ],
+    }
+    ok, issues = ex._validate_task_outputs(task)
+    assert ok is False
+    assert any("invalid_recovery_source_path" in i or "unsafe_recovery_source_path" in i for i in issues)

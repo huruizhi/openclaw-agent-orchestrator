@@ -49,8 +49,8 @@ class Executor:
         self.context_hmac_key = os.getenv("TASK_CONTEXT_HMAC_KEY", "")
         if self.task_context_hmac_required and not self.context_hmac_key.strip():
             raise RuntimeError("TASK_CONTEXT_HMAC_KEY is required for runtime context verification")
-        self.allow_implicit_output_automove = os.getenv("ORCH_OUTPUT_ALLOW_IMPLICIT_AUTOMOVE", "0") == "1"
         self._terminal_resolved: set[str] = set()
+        self._artifact_recovery_events: list[dict] = []
 
     def _task_context_path(self, task_id: str) -> Path:
         return self.artifacts_dir / task_id / "task_context.json"
@@ -324,29 +324,86 @@ class Executor:
         age_minutes = (time.time() - path.stat().st_mtime) / 60
         return age_minutes <= self.output_max_age_min
 
+    def _normalize_recovery_paths(self, task: dict) -> list[dict]:
+        return [
+            r for r in (task.get("artifact_recoveries") or []) if isinstance(r, dict)
+        ]
+
+    def _find_recovery_mapping(self, task: dict, filename: str) -> dict | None:
+        target = Path(filename).name
+        for raw in self._normalize_recovery_paths(task):
+            source_task_id = str(raw.get("source_task_id") or "").strip()
+            source_path = str(raw.get("source_path") or "").strip()
+            target_name = str(raw.get("target_filename") or "").strip() or Path(source_path).name
+            if not source_task_id or not source_path:
+                continue
+            if target_name == target:
+                return {
+                    "source_task_id": source_task_id,
+                    "source_path": source_path,
+                    "reason": str(raw.get("reason") or ""),
+                }
+        return None
+
     def _validate_task_outputs(self, task: dict) -> tuple[bool, list[str]]:
         expected = self._expected_output_paths(task)
+        task_id = str(task.get("id") or task.get("task_id") or "").strip()
         if not expected:
             return True, []
 
         issues: list[str] = []
         for p in expected:
             if not p.exists():
-                if self.allow_implicit_output_automove:
-                    candidates = [c for c in self.artifacts_dir.rglob(p.name) if c.is_file() and c != p]
-                    if len(candidates) == 1:
-                        p.parent.mkdir(parents=True, exist_ok=True)
-                        try:
-                            shutil.move(str(candidates[0]), str(p))
-                        except Exception:
-                            issues.append(f"missing:{p}")
-                            continue
-                    else:
-                        issues.append(f"missing:{p}")
-                        continue
-                else:
+                recovery = self._find_recovery_mapping(task, p.name)
+                if not recovery:
                     issues.append(f"missing:{p}")
                     continue
+
+                source_task_id = recovery["source_task_id"]
+                source_path = recovery["source_path"]
+                reason = recovery.get("reason", "")
+
+                source_task_dir = (self.artifacts_dir / source_task_id).resolve()
+                if not source_task_dir.exists():
+                    issues.append(f"invalid_recovery_source_task:{source_task_id}")
+                    continue
+
+                source_file = (source_task_dir / source_path).resolve()
+                if not source_file.exists() or source_file.is_dir():
+                    issues.append(f"invalid_recovery_source_path:{source_file}")
+                    continue
+                source_root = str(source_task_dir) + "/"
+                if not str(source_file).startswith(source_root):
+                    issues.append(f"unsafe_recovery_source_path:{source_file}")
+                    continue
+
+                try:
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(str(source_file), str(p))
+                except Exception as exc:
+                    issues.append(f"recovery_failed:{p}:{exc}")
+                    continue
+
+                self._artifact_recovery_events.append(
+                    {
+                        "task_id": task_id,
+                        "output": p.name,
+                        "source_task_id": source_task_id,
+                        "source_path": source_path,
+                        "reason": reason,
+                    }
+                )
+                self._notify(
+                    {task_id: task},
+                    task_id,
+                    "artifact_recovery",
+                    output=p.name,
+                    source_task_id=source_task_id,
+                    source_path=source_path,
+                    reason=reason,
+                    status="recovered",
+                )
+
             if self.validate_non_empty and p.stat().st_size == 0:
                 issues.append(f"empty:{p}")
                 continue
