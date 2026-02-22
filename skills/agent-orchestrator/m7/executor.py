@@ -2,6 +2,8 @@ import os
 import time
 import json
 import shutil
+import hashlib
+from datetime import datetime, timezone
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -41,6 +43,62 @@ class Executor:
         self.output_max_age_min = max(1, int(os.getenv("ORCH_OUTPUT_MAX_AGE_MINUTES", "120")))
         self.max_retries_transient = int(os.getenv("ORCH_FAILURE_RETRY_TRANSIENT", "2"))
         self.max_retries_logic = int(os.getenv("ORCH_FAILURE_RETRY_LOGIC", "0"))
+        self._dedupe_failures: dict[str, str] = {}
+
+    def _task_context_path(self, task_id: str) -> Path:
+        return self.artifacts_dir / task_id / "task_context.json"
+
+    def _build_task_context(self, task_id: str, task: dict) -> dict:
+        outputs = [str(o) for o in (task.get("outputs", []) or [])]
+        context = {
+            "run_id": self.run_id,
+            "project_id": os.getenv("PROJECT_ID", "default_project"),
+            "task_id": task_id,
+            "protocol_version": self.TERMINAL_PROTOCOL_VERSION,
+            "artifacts_root": str(self.artifacts_dir),
+            "task_artifacts_dir": str(self.artifacts_dir / task_id),
+            "required_outputs": outputs,
+            "allowed_output_filenames": outputs,
+            "inputs": list(task.get("inputs", []) or []),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        context_payload = json.dumps(context, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        context["context_sha256"] = hashlib.sha256(context_payload).hexdigest()
+        return context
+
+    def _write_task_context(self, task_id: str, task: dict) -> dict:
+        if not task_id:
+            return {}
+        path = self._task_context_path(task_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        context = self._build_task_context(task_id, task)
+        path.write_text(json.dumps(context, ensure_ascii=False, indent=2), encoding="utf-8")
+        return context
+
+    def _load_task_context(self, task_id: str) -> dict:
+        path = self._task_context_path(task_id)
+        if not path.exists():
+            raise RuntimeError(f"missing task_context: {path}")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise RuntimeError("invalid task_context format")
+        return data
+
+    def _validate_task_context(self, task_id: str) -> bool:
+        try:
+            data = self._load_task_context(task_id)
+            context_hash = str(data.pop("context_sha256", ""))
+            if not context_hash:
+                return False
+            payload = json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            return hashlib.sha256(payload).hexdigest() == context_hash
+        except Exception:
+            return False
+
+    def _failure_dedupe_key(self, task_id: str, error: object) -> str:
+        return hashlib.sha256(
+            f"{self.run_id}:{task_id}:{error}".encode("utf-8")
+        ).hexdigest()
 
     def _set_task_state(self, task_id: str, status: str, error: str | None = None) -> None:
         if self.state_store is None:
@@ -163,7 +221,10 @@ class Executor:
 
         notifier.notify(agent, event, payload)
         if event in {"task_failed", "task_waiting"} and agent != "main":
-            notifier.notify("main", event, {**payload, "source_agent": agent})
+            fail_key = self._failure_dedupe_key(task_id, payload.get("error"))
+            if self._dedupe_failures.get(task_id) != fail_key:
+                self._dedupe_failures[task_id] = fail_key
+                notifier.notify("main", event, {**payload, "source_agent": agent, "dedupe_key": fail_key})
 
     def _build_task_prompt(self, task: dict) -> str:
         title = str(task.get("title", "")).strip()
@@ -359,7 +420,10 @@ class Executor:
                     self.session_to_task[session] = task_id
                     last_progress_at = time.monotonic()
 
+                    context = self._write_task_context(task_id, tasks_by_id[task_id])
                     prompt = self._build_task_prompt(tasks_by_id[task_id])
+                    prompt += "\nTask context: " + str(self._task_context_path(task_id)) + "\n"
+                    prompt += "Task context hash: " + str(context.get("context_sha256", "")) + "\n"
                     try:
                         self.adapter.send_message(session, prompt)
                     except Exception as e:
@@ -430,6 +494,21 @@ class Executor:
                         continue
 
                     if etype == "done":
+                        if not self._validate_task_context(task_id):
+                            ok_fail, _, fail_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, False)
+                            if not ok_fail:
+                                return {
+                                    "status": "failed",
+                                    "waiting": self.waiting_tasks,
+                                    "error": fail_err,
+                                    "convergence_report": self._convergence_report(tasks_by_id),
+                                }
+                            self._record_task_end(task_id, False, tasks_by_id)
+                            self._set_task_state(task_id, "failed", error="context integrity check failed")
+                            self._notify(tasks_by_id, task_id, "task_failed", error="context integrity check failed")
+                            self._release_task_session(task_id, session)
+                            continue
+
                         ok_finish, _, finish_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, True)
                         if not ok_finish:
                             return {

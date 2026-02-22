@@ -2,6 +2,8 @@
 
 from pathlib import Path
 import sys
+import os
+import json
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -229,3 +231,43 @@ def test_expected_output_paths_are_task_scoped(tmp_path):
     assert str(paths[0]) == str(Path(tmp_path) / "task-40" / "README.md")
     assert str(paths[1]) == str(Path(tmp_path) / "task-40" / "output.json")
     print("✓ task-scoped artifact paths test passed")
+
+
+def test_executor_generates_task_context_and_writes_hash(tmp_path):
+    task = {"id": "task-55", "title": "Issue55", "outputs": ["out.txt"]}
+    scheduler = FakeScheduler([[('agent_a', 'task-55')], []])
+    adapter = FakeAdapter([[{"role": "assistant", "content": "[TASK_DONE]"}]])
+    watcher = SessionWatcher(adapter)
+    store = FakeStateStore()
+    ex = Executor(scheduler, adapter, watcher, artifacts_dir=str(tmp_path), state_store=store)
+    ex.run_id = "run_xxx"
+    os.environ["PROJECT_ID"] = "proj"
+
+    result = ex.run({"task-55": task})
+
+    assert result["status"] == "finished"
+    ctx_path = tmp_path / "task-55" / "task_context.json"
+    data = json.loads(ctx_path.read_text(encoding="utf-8"))
+    assert data["run_id"] == "run_xxx"
+    assert data["task_id"] == "task-55"
+    assert "context_sha256" in data
+
+
+def test_executor_task_context_tamper_rejects(tmp_path):
+    task = {"id": "task-55", "title": "Issue55", "outputs": ["out.txt"]}
+    scheduler = FakeScheduler([[('agent_a', 'task-55')], []])
+    adapter = FakeAdapter([[{"role": "assistant", "content": "[TASK_DONE]"}]])
+    watcher = SessionWatcher(adapter)
+    ex = Executor(scheduler, adapter, watcher, artifacts_dir=str(tmp_path), state_store=FakeStateStore())
+    ex.run_id = "run_xxx"
+
+    # generate context
+    result = ex.run({"task-55": task})
+    assert result["status"] == "finished"
+
+    ctx_path = tmp_path / "task-55" / "task_context.json"
+    data = json.loads(ctx_path.read_text(encoding="utf-8"))
+    data["task_id"] = "tampered"
+    ctx_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    assert ex._validate_task_context("task-55") is False

@@ -120,3 +120,19 @@ Output validation defaults: non-empty output check and optional JSON schema chec
 - `ORCH_OUTPUT_VALIDATE_FRESHNESS` (`1`/`0`): require output file freshness within `ORCH_OUTPUT_MAX_AGE_MINUTES` (default 120).
 - `ORCH_OUTPUT_VALIDATE_JSON` (`1`/`0`): require `.json` outputs to be valid JSON.
 - `ORCH_FAILURE_RETRY_TRANSIENT`, `ORCH_FAILURE_RETRY_LOGIC`: retry limits for classified failures.
+
+
+## v1.2.1 runtime contract
+
+- Issue #55: Task context contract
+  - Each task writes `<task_id>/task_context.json` including `run_id/project_id/task_id/protocol_version/artifacts_root/task_artifacts_dir/required_outputs/allowed_output_filenames/inputs/context_sha256`.
+  - Executor verifies task context integrity before marking task completion.
+- Issue #56: Artifact writer
+  - Use `scripts/artifact_writer.py` to write outputs with directory + whitelist enforcement.
+  - Output manifest `outputs_manifest.json` records `filename/sha256/size/written_at`.
+- Issue #57: Output preflight
+  - Use `scripts/validate_outputs.py --context <task_context.json>` for preflight validation and structured failure mapping.
+- Issue #58: Latest-run failure de-dup
+  - Failure/waiting notices are dedupe-keyed with `run_id+task_id+error` and mirrored once to `main`.
+- Issue #59: Regression coverage
+  - Added tests for parallel limit, output validation, context integrity, and waiting/resume contracts.
