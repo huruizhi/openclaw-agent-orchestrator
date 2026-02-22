@@ -17,7 +17,9 @@ LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "60"))
 SYSTEM_PROMPT = (
     "You assign one task to one agent. Return JSON only with fields "
     "task_id, assigned_to, confidence, reason. "
-    "assigned_to must be one agent name from input. confidence must be 0..1."
+    "assigned_to must be one agent name from input. confidence must be 0..1. "
+    "Route primarily by agent capabilities. Treat routing_guidance and dependency_hints "
+    "as soft references, not hard constraints."
 )
 
 
@@ -30,10 +32,13 @@ def _strip_codeblock(text: str) -> str:
     return s.strip()
 
 
-def llm_assign(task: dict, agents: dict) -> dict:
+def llm_assign(task: dict, agents: dict, routing_guidance: dict | None = None) -> dict:
     user_prompt = (
         "agents_json:\n"
         + json.dumps(agents, ensure_ascii=False)
+        + "\n\n"
+        + "routing_guidance_json:\n"
+        + json.dumps(routing_guidance or {}, ensure_ascii=False)
         + "\n\n"
         + "task_json:\n"
         + json.dumps(task, ensure_ascii=False)

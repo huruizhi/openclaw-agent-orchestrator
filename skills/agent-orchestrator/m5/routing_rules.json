@@ -1,35 +1,35 @@
 {
-  "version": "1.0",
-  "hard_rules": [
+  "version": "2.0",
+  "guidance": [
     {
-      "agent": "work",
-      "keywords": [
-        "github",
-        "pull request",
-        "pr",
-        "issue",
-        "milestone",
-        "release",
-        "repository",
-        "repo",
-        "github actions",
-        "workflow run",
-        "collect",
-        "fetch",
-        "status report"
+      "name": "capability-first-assignment",
+      "description": "Always assign by matching task intent to agent capabilities. Avoid keyword-only routing.",
+      "anti_patterns": [
+        "Do not route all GitHub-related tasks to one fixed agent.",
+        "Do not use one 'end-to-end' task to bypass implement/test/release separation."
       ]
     },
     {
-      "agent": "code",
-      "keywords": ["implement", "fix", "refactor", "patch", "code", "开发", "实现", "修复"]
+      "name": "implementation-testing-separation",
+      "description": "Implementation and testing should prefer different agents when both capabilities are available.",
+      "preferred_agents": ["code", "test"]
     },
     {
-      "agent": "test",
-      "keywords": ["test", "pytest", "regression", "ci", "验证", "回归"]
+      "name": "publish-risk-awareness",
+      "description": "Release/merge/close operations are high-risk. Prefer governance-capable agents and provide explicit rationale.",
+      "preferred_agents": ["main", "work"]
+    }
+  ],
+  "dependency_hints": [
+    {
+      "from": "implement",
+      "to": "test",
+      "reason": "Testing should validate implementation outputs."
     },
     {
-      "agent": "lab",
-      "keywords": ["browser", "twitter", "x.com", "web automation", "scrape"]
+      "from": "test",
+      "to": "release",
+      "reason": "Release should only happen after test evidence is available."
     }
   ]
 }
