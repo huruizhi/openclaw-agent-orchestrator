@@ -105,10 +105,10 @@ def _assert_std_error(err: dict):
 
 def test_parse_messages_markers():
     msgs = [
-        {"role": "assistant", "content": "ok [TASK_DONE]"},
-        {"role": "assistant", "content": "bad [TASK_FAILED]"},
-        {"role": "assistant", "content": "ask [TASK_WAITING] who are you?"},
-        {"role": "user", "content": "[TASK_DONE]"},
+        {"role": "assistant", "content": "[TASK_DONE]"},
+        {"role": "assistant", "content": "[TASK_FAILED]"},
+        {"role": "assistant", "content": "[TASK_WAITING] {\"question\": \"who are you?\"}"},
+        {"role": "assistant", "content": "noise [TASK_DONE]"},
     ]
     out = parse_messages(msgs)
     assert out == [
@@ -146,7 +146,7 @@ def test_executor_done_flow():
 def test_executor_waiting_flow():
     scheduler = FakeScheduler([[('agent_a', 't1')], []])
     adapter = FakeAdapter([
-        [{"role": "assistant", "content": "[TASK_WAITING] provide repo url"}],
+        [{"role": "assistant", "content": "[TASK_WAITING] {\"question\": \"provide repo url\"}"}],
     ])
     watcher = SessionWatcher(adapter)
     store = FakeStateStore()
@@ -270,4 +270,6 @@ def test_executor_task_context_tamper_rejects(tmp_path):
     data["task_id"] = "tampered"
     ctx_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
-    assert ex._validate_task_context("task-55") is False
+    ok, err = ex._validate_task_context("task-55")
+    assert ok is False
+    assert err in {"CONTEXT_HASH_MISMATCH", "CONTEXT_SIGNATURE_INVALID"}

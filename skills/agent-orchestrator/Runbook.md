@@ -82,4 +82,5 @@ python3 scripts/audit_timeline.py --job-id <job_id>
 
 - Canary validation: execute representative workflow on non-prod project_id and verify events/status convergence.
 - Rollback trigger: if canary fails acceptance, revert merge commits for v1.2.0 PRs and re-run smoke tests.
+- v1.2.2 canary checklist: verify `CONTEXT_SIGNATURE_INVALID` is raised for tampered context, verify malformed terminal payload yields `MALFORMED_PAYLOAD`, and confirm no implicit cross-task artifact auto-move occurs with default env.
 - Evidence artifacts: attach test_report.md, acceptance_evidence.md, and rollback dry-run notes.
