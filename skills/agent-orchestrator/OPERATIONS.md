@@ -142,3 +142,19 @@ Standardize failure classes (`transient`, `logic`, `resource`, `human`) with str
 - failure classification fields: `failure_class` + `retryable` are included in terminal failures.
 - output validation gates: presence non-empty freshness/schema can be enabled with environment: `ORCH_OUTPUT_VALIDATE_NON_EMPTY`, `ORCH_OUTPUT_VALIDATE_FRESHNESS`, `ORCH_OUTPUT_VALIDATE_JSON`.
 - runbook helper: execute `python scripts/canary_gate.py --run-id <id> --artifacts-dir <dir>` after convergence; if blocked, trigger `scripts/rollback_release.sh`.
+
+
+## v1.2.1 runtime contract
+
+- Issue #55: Task context contract
+  - Each task writes `<task_id>/task_context.json` including `run_id/project_id/task_id/protocol_version/artifacts_root/task_artifacts_dir/required_outputs/allowed_output_filenames/inputs/context_sha256`.
+  - Executor verifies task context integrity before marking task completion.
+- Issue #56: Artifact writer
+  - Use `scripts/artifact_writer.py` to write outputs with directory + whitelist enforcement.
+  - Output manifest `outputs_manifest.json` records `filename/sha256/size/written_at`.
+- Issue #57: Output preflight
+  - Use `scripts/validate_outputs.py --context <task_context.json>` for preflight validation and structured failure mapping.
+- Issue #58: Latest-run failure de-dup
+  - Failure/waiting notices are dedupe-keyed with `run_id+task_id+error` and mirrored once to `main`.
+- Issue #59: Regression coverage
+  - Added tests for parallel limit, output validation, context integrity, and waiting/resume contracts.
