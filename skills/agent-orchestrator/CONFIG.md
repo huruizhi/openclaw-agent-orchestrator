@@ -122,6 +122,21 @@ Output validation defaults: non-empty output check and optional JSON schema chec
 - `ORCH_FAILURE_RETRY_TRANSIENT`, `ORCH_FAILURE_RETRY_LOGIC`: retry limits for classified failures.
 
 
+## v1.2.2 runtime contract
+
+- Issue #61: HMAC-signed task context
+  - `TASK_CONTEXT_HMAC_KEY`: when set, executor writes `context_sig` and enforces HMAC verification.
+  - Invalid/missing signature fails terminal commit with `CONTEXT_SIGNATURE_INVALID`.
+- Issue #62: Isolation hardening
+  - `ORCH_OUTPUT_ALLOW_IMPLICIT_AUTOMOVE` defaults to `0` (disabled).
+  - Cross-task implicit same-name artifact adoption is off by default.
+- Issue #63: Terminal protocol hardening
+  - Only strict marker lines are accepted (`[TASK_DONE]`, `[TASK_FAILED]`, `[TASK_WAITING] {"question":"..."}`).
+  - Non-schema payloads are rejected as malformed.
+- Issue #64: State machine hardening
+  - Executor validates context + outputs before success terminal commit.
+  - Terminal event is idempotent (`terminal-once`): no success→failed reversal.
+
 ## v1.2.1 runtime contract
 
 - Issue #55: Task context contract

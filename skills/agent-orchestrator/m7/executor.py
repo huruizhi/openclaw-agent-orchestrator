@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .parser import parse_messages
+from utils.task_context_signature import sign_task_context, verify_task_context_signature
 
 
 class Executor:
@@ -44,6 +45,9 @@ class Executor:
         self.max_retries_transient = int(os.getenv("ORCH_FAILURE_RETRY_TRANSIENT", "2"))
         self.max_retries_logic = int(os.getenv("ORCH_FAILURE_RETRY_LOGIC", "0"))
         self._dedupe_failures: dict[str, str] = {}
+        self.context_hmac_key = os.getenv("TASK_CONTEXT_HMAC_KEY", "")
+        self.allow_implicit_output_automove = os.getenv("ORCH_OUTPUT_ALLOW_IMPLICIT_AUTOMOVE", "0") == "1"
+        self._terminal_resolved: set[str] = set()
 
     def _task_context_path(self, task_id: str) -> Path:
         return self.artifacts_dir / task_id / "task_context.json"
@@ -64,6 +68,8 @@ class Executor:
         }
         context_payload = json.dumps(context, sort_keys=True, ensure_ascii=False).encode("utf-8")
         context["context_sha256"] = hashlib.sha256(context_payload).hexdigest()
+        if self.context_hmac_key:
+            context["context_sig"] = sign_task_context(context, self.context_hmac_key)
         return context
 
     def _write_task_context(self, task_id: str, task: dict) -> dict:
@@ -84,16 +90,26 @@ class Executor:
             raise RuntimeError("invalid task_context format")
         return data
 
-    def _validate_task_context(self, task_id: str) -> bool:
+    def _validate_task_context(self, task_id: str) -> tuple[bool, str | None]:
         try:
             data = self._load_task_context(task_id)
+            context_sig = str(data.pop("context_sig", ""))
             context_hash = str(data.pop("context_sha256", ""))
             if not context_hash:
-                return False
+                return False, "CONTEXT_HASH_MISSING"
             payload = json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8")
-            return hashlib.sha256(payload).hexdigest() == context_hash
+            if hashlib.sha256(payload).hexdigest() != context_hash:
+                return False, "CONTEXT_HASH_MISMATCH"
+            if self.context_hmac_key:
+                if not context_sig:
+                    return False, "CONTEXT_SIGNATURE_MISSING"
+                signed_payload = dict(data)
+                signed_payload["context_sha256"] = context_hash
+                if not verify_task_context_signature(signed_payload, context_sig, self.context_hmac_key):
+                    return False, "CONTEXT_SIGNATURE_INVALID"
+            return True, None
         except Exception:
-            return False
+            return False, "CONTEXT_SIGNATURE_INVALID"
 
     def _failure_dedupe_key(self, task_id: str, error: object) -> str:
         return hashlib.sha256(
@@ -313,13 +329,16 @@ class Executor:
         issues: list[str] = []
         for p in expected:
             if not p.exists():
-                # Recovery: adopt uniquely-matched misplaced artifact into expected task-scoped path.
-                candidates = [c for c in self.artifacts_dir.rglob(p.name) if c.is_file() and c != p]
-                if len(candidates) == 1:
-                    p.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        shutil.move(str(candidates[0]), str(p))
-                    except Exception:
+                if self.allow_implicit_output_automove:
+                    candidates = [c for c in self.artifacts_dir.rglob(p.name) if c.is_file() and c != p]
+                    if len(candidates) == 1:
+                        p.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            shutil.move(str(candidates[0]), str(p))
+                        except Exception:
+                            issues.append(f"missing:{p}")
+                            continue
+                    else:
                         issues.append(f"missing:{p}")
                         continue
                 else:
@@ -461,6 +480,8 @@ class Executor:
                     continue
 
                 for ev in parsed_events:
+                    if task_id in self._terminal_resolved:
+                        continue
                     progressed = True
                     etype = ev.get("type")
                     payload_text = ev.get("payload")
@@ -487,6 +508,7 @@ class Executor:
                                 "error": finish_err,
                                 "convergence_report": self._convergence_report(tasks_by_id),
                             }
+                        self._terminal_resolved.add(task_id)
                         self._record_task_end(task_id, False, tasks_by_id)
                         self._set_task_state(task_id, "failed", error="Malformed terminal payload")
                         self._notify(tasks_by_id, task_id, "task_failed", error=err)
@@ -494,7 +516,8 @@ class Executor:
                         continue
 
                     if etype == "done":
-                        if not self._validate_task_context(task_id):
+                        ctx_ok, ctx_err = self._validate_task_context(task_id)
+                        if not ctx_ok:
                             ok_fail, _, fail_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, False)
                             if not ok_fail:
                                 return {
@@ -503,9 +526,27 @@ class Executor:
                                     "error": fail_err,
                                     "convergence_report": self._convergence_report(tasks_by_id),
                                 }
+                            self._terminal_resolved.add(task_id)
                             self._record_task_end(task_id, False, tasks_by_id)
-                            self._set_task_state(task_id, "failed", error="context integrity check failed")
-                            self._notify(tasks_by_id, task_id, "task_failed", error="context integrity check failed")
+                            self._set_task_state(task_id, "failed", error=ctx_err or "CONTEXT_SIGNATURE_INVALID")
+                            self._notify(tasks_by_id, task_id, "task_failed", error=ctx_err or "CONTEXT_SIGNATURE_INVALID")
+                            self._release_task_session(task_id, session)
+                            continue
+
+                        valid, details = self._validate_task_outputs(tasks_by_id[task_id])
+                        if not valid:
+                            ok_fail, _, fail_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, False)
+                            if not ok_fail:
+                                return {
+                                    "status": "failed",
+                                    "waiting": self.waiting_tasks,
+                                    "error": fail_err,
+                                    "convergence_report": self._convergence_report(tasks_by_id),
+                                }
+                            self._terminal_resolved.add(task_id)
+                            self._record_task_end(task_id, False, tasks_by_id)
+                            self._set_task_state(task_id, "failed", error=f"output validation failed: {', '.join(details)}")
+                            self._notify(tasks_by_id, task_id, "task_failed", error=f"output validation failed: {', '.join(details)}")
                             self._release_task_session(task_id, session)
                             continue
 
@@ -517,22 +558,7 @@ class Executor:
                                 "error": finish_err,
                                 "convergence_report": self._convergence_report(tasks_by_id),
                             }
-                        valid, details = self._validate_task_outputs(tasks_by_id[task_id])
-                        if not valid:
-                            ok_fail, _, fail_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, False)
-                            if not ok_fail:
-                                return {
-                                    "status": "failed",
-                                    "waiting": self.waiting_tasks,
-                                    "error": fail_err,
-                                    "convergence_report": self._convergence_report(tasks_by_id),
-                                }
-                            self._record_task_end(task_id, False, tasks_by_id)
-                            self._set_task_state(task_id, "failed", error=f"output validation failed: {', '.join(details)}")
-                            self._notify(tasks_by_id, task_id, "task_failed", error=f"output validation failed: {', '.join(details)}")
-                            self._release_task_session(task_id, session)
-                            continue
-
+                        self._terminal_resolved.add(task_id)
                         self._record_task_end(task_id, True, tasks_by_id)
                         self._set_task_state(task_id, "completed")
                         self._notify(tasks_by_id, task_id, "task_completed")
@@ -555,6 +581,7 @@ class Executor:
                             failure_class="logic",
                             retryable=False,
                         )
+                        self._terminal_resolved.add(task_id)
                         self._record_task_end(task_id, False, tasks_by_id)
                         self._set_task_state(task_id, "failed", error=failure["root_cause"])
                         self._notify(tasks_by_id, task_id, "task_failed", error=failure)

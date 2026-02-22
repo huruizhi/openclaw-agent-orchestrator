@@ -92,6 +92,7 @@ Release workflow for v1.2.0: run issues 40-44 in canary first, validate converge
 - Terminal events now use protocol v2 payload when compatibility mode enabled:
   - `task_completed` / `task_failed` / `task_waiting` include `status_protocol="v2"`, `terminal_state`, `failure` block and `retry_policy`.
 - Malformed terminal payloads are rejected: parser returns `MALFORMED_PAYLOAD` and executor marks task failed with actionable error.
+- v1.2.2 hardening: task context can be HMAC-signed (`TASK_CONTEXT_HMAC_KEY`), implicit cross-task artifact auto-move is disabled by default, and terminal commit is validate-first + terminal-once.
 - `TASK_WAITING` pauses only the task branch (`scheduler.pause_task`) and keeps unrelated runnable tasks flowing; task-level wait state is tracked for resume path.
 - Failure class and retryability are now attached to terminal errors (`failure_class`, `retryable`).
 - Canary + rollback support scripts added: `scripts/canary_gate.py`, `scripts/rollback_release.sh` for release-gate execution.
