@@ -84,3 +84,11 @@ python3 scripts/audit_timeline.py --job-id <job_id>
 - Rollback trigger: if canary fails acceptance, revert merge commits for v1.2.0 PRs and re-run smoke tests.
 - v1.2.2 canary checklist: verify `CONTEXT_SIGNATURE_INVALID` is raised for tampered context, verify malformed terminal payload yields `MALFORMED_PAYLOAD`, and confirm no implicit cross-task artifact auto-move occurs with default env.
 - Evidence artifacts: attach test_report.md, acceptance_evidence.md, and rollback dry-run notes.
+
+
+## v1.2.3 Release Gate Checklist
+
+- Terminal latency benchmark command: `python3 scripts/bench_terminal_latency.py --samples 1000 --seed 20260222 --raw-output docs/release/v1.2.3-benchmark-raw.jsonl --report docs/release/v1.2.3-benchmark-evidence.md`
+- Acceptance criteria: P95 <= 80ms and P99 <= 150ms, both PASS in the generated report.
+- Raw evidence retention: keep JSONL with per-sample latency and report summary under `docs/release/`.
+- Review command output and attach evidence link in milestone closure note.
