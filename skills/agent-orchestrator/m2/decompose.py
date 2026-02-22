@@ -9,10 +9,26 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 try:
-    from .prompt import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE, REPAIR_PROMPT_TEMPLATE
+    from .prompt import (
+        SYSTEM_PROMPT,
+        USER_PROMPT_TEMPLATE,
+        CODING_USER_PROMPT_TEMPLATE,
+        NON_CODING_USER_PROMPT_TEMPLATE,
+        MIXED_USER_PROMPT_TEMPLATE,
+        GOAL_CLASSIFIER_SYSTEM_PROMPT,
+        REPAIR_PROMPT_TEMPLATE,
+    )
     from .validate import validate_tasks
 except ImportError:
-    from prompt import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE, REPAIR_PROMPT_TEMPLATE
+    from prompt import (
+        SYSTEM_PROMPT,
+        USER_PROMPT_TEMPLATE,
+        CODING_USER_PROMPT_TEMPLATE,
+        NON_CODING_USER_PROMPT_TEMPLATE,
+        MIXED_USER_PROMPT_TEMPLATE,
+        GOAL_CLASSIFIER_SYSTEM_PROMPT,
+        REPAIR_PROMPT_TEMPLATE,
+    )
     from validate import validate_tasks
 
 # Load .env from project root
@@ -149,24 +165,54 @@ def _load_agent_capability_hints() -> str:
     return "\n".join(lines)
 
 
-def _build_goal_prompt(goal: str) -> str:
-    base = USER_PROMPT_TEMPLATE.format(goal=goal)
+def _classify_goal_type(goal: str) -> dict:
+    messages = [
+        {"role": "system", "content": GOAL_CLASSIFIER_SYSTEM_PROMPT},
+        {"role": "user", "content": f"Goal: {goal}"},
+    ]
+    try:
+        raw = llm_call(messages)
+        parsed = json.loads(strip_codeblock(raw))
+        task_type = str(parsed.get("task_type", "")).strip().lower()
+        confidence = float(parsed.get("confidence", 0.0) or 0.0)
+        reason = str(parsed.get("reason", "")).strip()
+        if task_type not in {"coding", "non_coding", "mixed"}:
+            return {"task_type": "coding", "confidence": 0.0, "reason": "classifier_fallback"}
+        return {
+            "task_type": task_type,
+            "confidence": max(0.0, min(1.0, confidence)),
+            "reason": reason or "ok",
+        }
+    except Exception:
+        return {"task_type": "coding", "confidence": 0.0, "reason": "classifier_error_fallback"}
+
+
+def _build_goal_prompt(goal: str, task_type: str) -> str:
+    template = USER_PROMPT_TEMPLATE
+    if task_type == "coding":
+        template = CODING_USER_PROMPT_TEMPLATE
+    elif task_type == "non_coding":
+        template = NON_CODING_USER_PROMPT_TEMPLATE
+    elif task_type == "mixed":
+        template = MIXED_USER_PROMPT_TEMPLATE
+
+    base = template.format(goal=goal)
     hints = _load_agent_capability_hints()
     if not hints:
         return base
     return f"{base}\n\n{hints}"
 
 
-def generate_tasks(goal: str) -> str:
+def generate_tasks(goal: str, task_type: str) -> str:
     """Generate initial task decomposition."""
-    logger.info("Generating task decomposition", goal=goal)
+    logger.info("Generating task decomposition", goal=goal, task_type=task_type)
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": _build_goal_prompt(goal)}
+        {"role": "user", "content": _build_goal_prompt(goal, task_type)}
     ]
     return llm_call(messages)
 
-def repair_tasks(goal: str, bad_json: str, error: Exception) -> str:
+def repair_tasks(goal: str, bad_json: str, error: Exception, task_type: str) -> str:
     """Repair invalid task decomposition based on error feedback."""
     logger.warning("Attempting task repair", error_type=type(error).__name__, error=str(error))
     repair_prompt = REPAIR_PROMPT_TEMPLATE.format(
@@ -176,7 +222,7 @@ def repair_tasks(goal: str, bad_json: str, error: Exception) -> str:
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": _build_goal_prompt(goal)},
+        {"role": "user", "content": _build_goal_prompt(goal, task_type)},
         {"role": "user", "content": repair_prompt}
     ]
     return llm_call(messages)
@@ -284,7 +330,10 @@ def _enrich_decomposition(tasks_dict: dict) -> dict:
 def decompose(goal: str) -> dict:
     """Decompose goal into tasks with repair loop."""
     logger.info("Starting task decomposition", goal=goal)
-    raw = generate_tasks(goal)
+    classification = _classify_goal_type(goal)
+    task_type = classification.get("task_type", "coding")
+    logger.info("Goal classified", task_type=task_type, confidence=classification.get("confidence"), reason=classification.get("reason"))
+    raw = generate_tasks(goal, task_type)
 
     for i in range(3):
         try:
@@ -299,7 +348,7 @@ def decompose(goal: str) -> dict:
 
             parsed = _normalize_task_ids(parsed)
             parsed = _enrich_decomposition(parsed)
-            validate_tasks(parsed)
+            validate_tasks(parsed, task_type)
 
             task_count = len(parsed["tasks"])
             logger.info("Task decomposition successful", task_count=task_count)
@@ -320,6 +369,6 @@ def decompose(goal: str) -> dict:
                 logger.error("Task decomposition failed after 3 attempts")
                 raise RuntimeError(error_msg)
 
-            raw = repair_tasks(goal, raw, e)
+            raw = repair_tasks(goal, raw, e, task_type)
 
     raise RuntimeError("Decomposition failed")

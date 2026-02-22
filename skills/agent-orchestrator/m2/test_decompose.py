@@ -6,8 +6,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from m2.decompose import decompose, strip_codeblock, _normalize_task_ids
+from m2.decompose import decompose, strip_codeblock, _normalize_task_ids, _classify_goal_type, _build_goal_prompt
 from m2.validate import validate_tasks
+from jsonschema import ValidationError
 
 
 def _use_real_llm() -> bool:
@@ -74,7 +75,7 @@ def test_validate_directly():
     print("\nTesting validate_tasks directly...")
 
     valid_data = json.loads(MOCK_LLM_RESPONSE)
-    validate_tasks(valid_data)
+    validate_tasks(valid_data, "non_coding")
     print("✓ validate_tasks passed")
 
 def test_decompose_with_mock():
@@ -90,15 +91,18 @@ def test_decompose_with_mock():
                 "choices": [{"message": {"content": MOCK_LLM_RESPONSE}}]
             }).encode()
 
+    import importlib
+    mod = importlib.import_module("m2.decompose")
     with patch('urllib.request.urlopen', return_value=MockHTTPResponse()):
-        result = decompose("分析 GitLab Geo 同步延迟")
+        with patch.object(mod, '_classify_goal_type', return_value={"task_type": "non_coding", "confidence": 0.99, "reason": "test"}):
+            result = decompose("分析 GitLab Geo 同步延迟")
 
     assert "tasks" in result
     assert len(result["tasks"]) == 3
     assert result["tasks"][0]["title"] == "Collect GitLab logs"
     print("✓ decompose returned valid structure")
 
-    validate_tasks(result)
+    validate_tasks(result, "non_coding")
     print("✓ decompose output passed validation")
 
 
@@ -143,8 +147,115 @@ def test_normalize_task_ids_repairs_invalid_and_deps():
     assert t2.startswith("tsk_") and len(t2) == 30
     assert fixed["tasks"][1]["deps"] == [t0]
     assert fixed["tasks"][2]["deps"] == [t1]
-    validate_tasks(fixed)
+    validate_tasks(fixed, "non_coding")
     print("✓ normalize_task_ids repaired invalid IDs and deps")
+
+def test_goal_classifier_fallback(monkeypatch):
+    import importlib
+    mod = importlib.import_module("m2.decompose")
+    monkeypatch.setattr(mod, "llm_call", lambda messages, retry_count=0: '{"task_type":"unknown","confidence":0.9}')
+    out = _classify_goal_type("write docs")
+    assert out["task_type"] == "coding"
+
+
+def test_prompt_mode_switching():
+    p1 = _build_goal_prompt("implement feature", "coding")
+    p2 = _build_goal_prompt("write doc", "non_coding")
+    p3 = _build_goal_prompt("ship + doc", "mixed")
+    assert "Planning mode: coding" in p1
+    assert "Planning mode: non_coding" in p2
+    assert "Planning mode: mixed" in p3
+
+
+def test_validate_coding_requires_test_and_commands():
+    data = {
+        "tasks": [
+            {
+                "id": "tsk_01H8VK0J4R2Q3YN9XMWDPESZA1",
+                "title": "Implement feature",
+                "task_type": "implement",
+                "status": "pending",
+                "deps": [],
+                "inputs": [],
+                "outputs": ["patch.diff"],
+                "done_when": ["implemented"],
+                "tests": ["unit:test_a"],
+                "commands": ["pytest -q tests/test_a.py"],
+            },
+            {
+                "id": "tsk_01H8VK0J4R2Q3YN9XMWDPESZA2",
+                "title": "Test feature",
+                "task_type": "test",
+                "status": "pending",
+                "deps": ["tsk_01H8VK0J4R2Q3YN9XMWDPESZA1"],
+                "inputs": ["patch.diff"],
+                "outputs": ["report.json"],
+                "done_when": ["tests passed"],
+                "tests": ["unit:test_a"],
+                "commands": ["pytest -q tests/test_a.py"],
+            },
+            {
+                "id": "tsk_01H8VK0J4R2Q3YN9XMWDPESZA3",
+                "title": "Integrate",
+                "task_type": "integrate",
+                "status": "pending",
+                "deps": ["tsk_01H8VK0J4R2Q3YN9XMWDPESZA2"],
+                "inputs": ["report.json"],
+                "outputs": ["pr_url"],
+                "done_when": ["pr opened"],
+                "tests": ["smoke"],
+                "commands": ["echo ok"],
+            },
+        ]
+    }
+    assert validate_tasks(data, "coding") is True
+
+
+def test_validate_coding_missing_test_task_fails():
+    data = {
+        "tasks": [
+            {
+                "id": "tsk_01H8VK0J4R2Q3YN9XMWDPESZB1",
+                "title": "Implement feature",
+                "task_type": "implement",
+                "status": "pending",
+                "deps": [],
+                "inputs": [],
+                "outputs": ["patch.diff"],
+                "done_when": ["implemented"],
+                "tests": ["unit"],
+                "commands": ["pytest -q"],
+            },
+            {
+                "id": "tsk_01H8VK0J4R2Q3YN9XMWDPESZB2",
+                "title": "Write docs",
+                "task_type": "docs",
+                "status": "pending",
+                "deps": ["tsk_01H8VK0J4R2Q3YN9XMWDPESZB1"],
+                "inputs": [],
+                "outputs": ["doc.md"],
+                "done_when": ["done"],
+            },
+            {
+                "id": "tsk_01H8VK0J4R2Q3YN9XMWDPESZB3",
+                "title": "Integrate",
+                "task_type": "integrate",
+                "status": "pending",
+                "deps": ["tsk_01H8VK0J4R2Q3YN9XMWDPESZB2"],
+                "inputs": [],
+                "outputs": ["pr"],
+                "done_when": ["done"],
+                "tests": ["smoke"],
+                "commands": ["echo ok"],
+            },
+        ]
+    }
+    try:
+        validate_tasks(data, "coding")
+        assert False, "Expected ValidationError"
+    except ValidationError:
+        assert True
+
 
 def test_invalid_response_handling():
     print("\nTesting error handling...")
