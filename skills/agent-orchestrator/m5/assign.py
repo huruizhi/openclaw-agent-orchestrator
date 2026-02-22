@@ -33,12 +33,12 @@ def _validate_routing_rules(rules: dict, valid_agents: set[str]) -> None:
     except ValidationError as e:
         raise ValueError(f"Invalid routing_rules.json: {e.message}") from e
 
-    for i, rule in enumerate(rules.get("hard_rules", [])):
-        agent = str(rule.get("agent", "")).strip()
-        if agent not in valid_agents:
-            raise ValueError(
-                f"Invalid routing_rules.json: hard_rules[{i}].agent='{agent}' is not in agents.json"
-            )
+    for i, guide in enumerate(rules.get("guidance", [])):
+        for agent in guide.get("preferred_agents", []) or []:
+            if agent not in valid_agents:
+                raise ValueError(
+                    f"Invalid routing_rules.json: guidance[{i}].preferred_agents contains unknown agent '{agent}'"
+                )
 
 
 def _load_routing_rules(valid_agents: set[str]) -> dict:
@@ -59,34 +59,15 @@ def _is_valid_confidence(value) -> bool:
     return 0.0 <= v <= 1.0
 
 
-def _hard_rule_assign(task: dict, valid_agents: set[str]) -> tuple[str, str] | None:
-    """Hard-rule routing from routing_rules.json before LLM routing."""
-    title = str(task.get("title", "")).lower()
-    desc = str(task.get("description", "")).lower()
-    text = f"{title}\n{desc}"
-
-    rules = (_load_routing_rules(valid_agents).get("hard_rules") or [])
-    for rule in rules:
-        if not isinstance(rule, dict):
-            continue
-        agent = str(rule.get("agent", "")).strip()
-        if not agent or agent not in valid_agents:
-            continue
-        keywords = rule.get("keywords") or []
-        if any(str(k).lower() in text for k in keywords):
-            return agent, f"hard_rule:{agent}"
-    return None
-
-
 def assign_agents(tasks_dict: dict) -> dict:
     """Routing policy:
-    1) Hard rules from routing_rules.json
-    2) LLM routing when no hard rule hit
-    3) fallback default
+    1) AI-first assignment using capabilities + soft guidance
+    2) fallback default
     """
     agents_data = _load_agents()
     default_agent = agents_data["default_agent"]
     agent_names = {a["name"] for a in agents_data["agents"]}
+    routing_guidance = _load_routing_rules(agent_names)
 
     cache = {}
     out = dict(tasks_dict)
@@ -97,16 +78,13 @@ def assign_agents(tasks_dict: dict) -> dict:
         description = str(task.get("description", ""))
         cache_key = title + "\n" + description
 
-        hard = _hard_rule_assign(task, agent_names)
-        if hard and hard[0] in agent_names:
-            assigned, reason = hard
-        elif cache_key in cache:
+        if cache_key in cache:
             assigned, reason = cache[cache_key]
         else:
             assigned = default_agent
             reason = "fallback:default"
             try:
-                decision = llm_assign(task, agents_data)
+                decision = llm_assign(task, agents_data, routing_guidance)
                 candidate = decision.get("assigned_to")
                 confidence = decision.get("confidence")
                 if candidate in agent_names and _is_valid_confidence(confidence) and float(confidence) >= 0.3:
