@@ -355,6 +355,32 @@ class Executor:
         if not isinstance(payload, dict):
             return False, "terminal payload must be object with fields event/type/run_id/task_id"
 
+        # v2 compat: normalize legacy/partial terminal payload before strict validation.
+        if self.compat_protocol:
+            alias = {
+                "task_completed": "done",
+                "task_failed": "failed",
+                "task_waiting": "waiting",
+            }
+            ev_raw = str(payload.get("event") or "").strip()
+            ty_raw = str(payload.get("type") or "").strip()
+            ev = alias.get(ev_raw, ev_raw)
+            ty = alias.get(ty_raw, ty_raw)
+
+            if not ev and ty:
+                ev = ty
+            if not ty and ev:
+                ty = ev
+            if not ev:
+                ev = event
+            if not ty:
+                ty = event
+
+            payload["event"] = ev
+            payload["type"] = ty
+            payload.setdefault("run_id", self.run_id)
+            payload.setdefault("task_id", task_id)
+
         required = {"event", "type", "run_id", "task_id"}
         missing = [field for field in sorted(required) if field not in payload]
         if missing:
