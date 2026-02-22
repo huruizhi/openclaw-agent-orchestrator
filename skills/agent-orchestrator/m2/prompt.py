@@ -48,6 +48,10 @@ TASK GRANULARITY:
 Each task must be atomic - one agent completes it in one attempt.
 Target granularity: 2-10 minutes per task. If a task is larger, split it.
 
+TASK TYPE:
+- Include `task_type` for each task.
+- Allowed values: implement, test, integrate, docs, ops, research, coordination.
+
 GOOD: "Fetch HN homepage", "Parse top posts", "Write blog post"
 BAD: "Analyze HN", "Investigate", "Think about content"
 
@@ -99,7 +103,27 @@ EXAMPLE TASK:
 }
 """
 
+GOAL_CLASSIFIER_SYSTEM_PROMPT = """
+You are a task-type classifier for orchestration planning.
+Classify a goal into one of: coding, non_coding, mixed.
+
+Definitions:
+- coding: primary deliverable is source code changes and code verification.
+- non_coding: primary deliverable is docs/research/ops/coordination/content with no source code implementation required.
+- mixed: both coding and non-coding deliverables are core to completion.
+
+Return JSON only:
+{
+  "task_type": "coding|non_coding|mixed",
+  "confidence": 0.0-1.0,
+  "reason": "short rationale"
+}
+"""
+
 USER_PROMPT_TEMPLATE = "Goal: {goal}"
+CODING_USER_PROMPT_TEMPLATE = "Goal: {goal}\n\nPlanning mode: coding\nRequirements:\n- Include implement and test tasks (integrate optional by delivery need).\n- For coding tasks (implement/test/integrate), include non-empty tests[] and commands[].\n- Avoid single end-to-end mega task."
+NON_CODING_USER_PROMPT_TEMPLATE = "Goal: {goal}\n\nPlanning mode: non_coding\nRequirements:\n- Prefer docs/research/ops/coordination task types.\n- tests[] and commands[] are optional unless technically needed."
+MIXED_USER_PROMPT_TEMPLATE = "Goal: {goal}\n\nPlanning mode: mixed\nRequirements:\n- Split coding and non-coding work into separate tasks.\n- Coding tasks still require tests[] and commands[]."
 
 REPAIR_PROMPT_TEMPLATE = """
 The JSON you produced is invalid.

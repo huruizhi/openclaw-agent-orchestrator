@@ -31,6 +31,12 @@
       "description": "Optional extra details for agent"
     },
 
+    "task_type": {
+      "type": "string",
+      "enum": ["implement", "test", "integrate", "docs", "ops", "research", "coordination"],
+      "description": "Semantic task type for decomposition and downstream routing"
+    },
+
     "status": {
       "type": "string",
       "enum": ["pending", "ready", "running", "waiting", "done", "failed"],
@@ -69,6 +75,18 @@
       "items": {
         "type": "string"
       }
+    },
+
+    "tests": {
+      "type": "array",
+      "description": "Test points or cases for coding tasks",
+      "items": {"type": "string"}
+    },
+
+    "commands": {
+      "type": "array",
+      "description": "Executable commands used for validation",
+      "items": {"type": "string"}
     },
 
     "assigned_to": {
