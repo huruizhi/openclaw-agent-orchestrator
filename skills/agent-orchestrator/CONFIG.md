@@ -116,6 +116,8 @@ Output validation defaults: non-empty output check and optional JSON schema chec
 
 ## v1.2.0 runtime flags
 - `ORCH_TERMINAL_COMPAT` (`1`/`0`): allow legacy text protocol compatibility payload fields.
+- `ORCH_TRACE_ENABLED` (`1`/`0`): enable workflow/worker tracing hooks (OTel best-effort; LangSmith correlation hints).
+- `ORCH_LEGACY_QUEUE_COMPAT` (`1`/`0`): force `scripts/submit.py` to write legacy queue JSON instead of state-store proxy.
 - `ORCH_OUTPUT_VALIDATE_NON_EMPTY` (`1`/`0`): require outputs non-empty.
 - `ORCH_OUTPUT_VALIDATE_FRESHNESS` (`1`/`0`): require output file freshness within `ORCH_OUTPUT_MAX_AGE_MINUTES` (default 120).
 - `ORCH_OUTPUT_VALIDATE_JSON` (`1`/`0`): require `.json` outputs to be valid JSON.
