@@ -26,10 +26,14 @@ def validate_task_context_activity(*, task_context_path: Path, expected_run_id: 
 
     # Keep parity with pre-M17 executor guardrails: hash integrity + optional HMAC signature.
     payload = dict(data)
-    context_sig = str(payload.pop("context_sig", ""))
-    context_hash = str(payload.pop("context_sha256", ""))
+    raw_sig = payload.pop("context_sig", "")
+    raw_hash = payload.pop("context_sha256", "")
+    context_sig = raw_sig if isinstance(raw_sig, str) else ""
+    context_hash = raw_hash if isinstance(raw_hash, str) else ""
     if not context_hash:
         return False, "CONTEXT_HASH_MISSING"
+    if len(context_hash) != 64 or any(ch not in "0123456789abcdef" for ch in context_hash.lower()):
+        return False, "CONTEXT_HASH_FORMAT_INVALID"
 
     canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
     if hashlib.sha256(canonical).hexdigest() != context_hash:

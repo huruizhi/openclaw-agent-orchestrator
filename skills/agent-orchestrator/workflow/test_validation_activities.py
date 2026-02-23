@@ -103,3 +103,32 @@ def test_validate_task_context_activity_signature_valid(tmp_path, monkeypatch):
     ok, err = validate_task_context_activity(task_context_path=p, expected_run_id="r1", expected_task_id="t1")
     assert ok is True
     assert err is None
+
+
+def test_validate_task_context_activity_hash_required_and_format(tmp_path):
+    p = tmp_path / "task_context.json"
+
+    missing = _ctx("r1", "t1")
+    missing.pop("context_sha256", None)
+    p.write_text(json.dumps(missing), encoding="utf-8")
+    ok, err = validate_task_context_activity(task_context_path=p, expected_run_id="r1", expected_task_id="t1")
+    assert ok is False
+    assert err == "CONTEXT_HASH_MISSING"
+
+    bad = _ctx("r1", "t1")
+    bad["context_sha256"] = "not-a-sha"
+    p.write_text(json.dumps(bad), encoding="utf-8")
+    ok, err = validate_task_context_activity(task_context_path=p, expected_run_id="r1", expected_task_id="t1")
+    assert ok is False
+    assert err == "CONTEXT_HASH_FORMAT_INVALID"
+
+
+def test_validate_task_context_activity_required_key_missing(tmp_path, monkeypatch):
+    p = tmp_path / "task_context.json"
+    monkeypatch.setenv("TASK_CONTEXT_HMAC_KEY_REQUIRED", "1")
+    monkeypatch.delenv("TASK_CONTEXT_HMAC_KEY", raising=False)
+    p.write_text(json.dumps(_ctx("r1", "t1")), encoding="utf-8")
+
+    ok, err = validate_task_context_activity(task_context_path=p, expected_run_id="r1", expected_task_id="t1")
+    assert ok is False
+    assert err == "CONTEXT_HMAC_KEY_REQUIRED"
