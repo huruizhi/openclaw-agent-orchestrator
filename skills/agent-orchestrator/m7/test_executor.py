@@ -227,6 +227,36 @@ def test_executor_safe_wrapper_finish_task_error():
     assert "FINISH_TASK" in result["error"]["error_code"]
 
 
+def test_no_terminal_signal_converges_to_waiting_human(monkeypatch):
+    monkeypatch.setenv("ORCH_EXECUTOR_IDLE_TIMEOUT_SECONDS", "1")
+    monkeypatch.setenv("ORCH_NO_TERMINAL_SIGNAL_POLICY", "waiting_human")
+
+    scheduler = FakeScheduler([[('agent_a', 't1')], []])
+    adapter = FakeAdapter(poll_script=[[], [], [], []])
+    watcher = SessionWatcher(adapter)
+    executor = Executor(scheduler, adapter, watcher)
+    executor.run_id = "run_wait_policy"
+
+    result = executor.run({"t1": {"id": "t1", "title": "Missing terminal signal"}})
+    assert result["status"] == "waiting"
+    assert result["error"]["error_code"] == "NO_TERMINAL_SIGNAL_TIMEOUT_WAITING_HUMAN"
+
+
+def test_no_terminal_signal_converges_to_failed(monkeypatch):
+    monkeypatch.setenv("ORCH_EXECUTOR_IDLE_TIMEOUT_SECONDS", "1")
+    monkeypatch.setenv("ORCH_NO_TERMINAL_SIGNAL_POLICY", "failed")
+
+    scheduler = FakeScheduler([[('agent_a', 't1')], []])
+    adapter = FakeAdapter(poll_script=[[], [], [], []])
+    watcher = SessionWatcher(adapter)
+    executor = Executor(scheduler, adapter, watcher)
+    executor.run_id = "run_failed_policy"
+
+    result = executor.run({"t1": {"id": "t1", "title": "Missing terminal signal"}})
+    assert result["status"] == "failed"
+    assert result["error"]["error_code"] == "NO_TERMINAL_SIGNAL_TIMEOUT_FAILED"
+
+
 if __name__ == "__main__":
     test_parse_messages_markers()
     test_executor_done_flow()

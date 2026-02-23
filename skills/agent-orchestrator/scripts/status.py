@@ -49,6 +49,9 @@ def _normalized_view(job: dict) -> dict:
         active_run_id = lr.get("run_id") or (out.get("audit") or {}).get("run_id")
     out["run_id"] = active_run_id
 
+    source_precedence = ["temporal", "last_result", "job"]
+    out["run_status_source_precedence"] = source_precedence
+
     temporal_status = _load_temporal_status(str(active_run_id or ""), project_id=out.get("project_id")) if active_run_id else None
     if temporal_status:
         out["run_status"] = temporal_status
@@ -64,10 +67,26 @@ def _normalized_view(job: dict) -> dict:
     if isinstance(lr, dict) and active_run_id and lr.get("run_id") == active_run_id:
         lr_status = str(lr.get("status") or "")
         if temporal_status and lr_status and temporal_status != lr_status:
+            terminal = {"completed", "failed", "waiting_human"}
+            t_is_terminal = str(temporal_status).lower() in terminal
+            l_is_terminal = str(lr_status).lower() in terminal
+            if t_is_terminal and l_is_terminal:
+                severity = "high"
+                action_hint = "Investigate divergence immediately; trust temporal as SSOT and reconcile stale last_result snapshots."
+            elif t_is_terminal or l_is_terminal:
+                severity = "medium"
+                action_hint = "Run status again and inspect recent events; temporal is prioritized while convergence is checked."
+            else:
+                severity = "low"
+                action_hint = "Observe; non-terminal divergence can happen during in-flight updates."
+
             out["status_divergence"] = {
                 "run_id": active_run_id,
                 "temporal": temporal_status,
                 "last_result": lr_status,
+                "severity": severity,
+                "action_hint": action_hint,
+                "source_precedence": source_precedence,
             }
     if isinstance(human_inputs, list):
         out["human_input_count"] = len(human_inputs)
