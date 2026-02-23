@@ -775,12 +775,23 @@ class Executor:
 
             if not progressed:
                 if time.monotonic() - last_progress_at > idle_timeout_seconds:
+                    policy = os.getenv("ORCH_NO_TERMINAL_SIGNAL_POLICY", "waiting_human").strip().lower()
+                    if policy not in {"waiting_human", "failed"}:
+                        policy = "waiting_human"
+                    terminal_status = "waiting" if policy == "waiting_human" else "failed"
+                    reason_code = (
+                        "NO_TERMINAL_SIGNAL_TIMEOUT_WAITING_HUMAN"
+                        if policy == "waiting_human"
+                        else "NO_TERMINAL_SIGNAL_TIMEOUT_FAILED"
+                    )
                     return {
-                        "status": "waiting" if self.waiting_tasks else "stalled",
+                        "status": terminal_status,
                         "waiting": self.waiting_tasks,
                         "error": {
-                            "error_code": "RUNNER_IDLE_TIMEOUT",
-                            "root_cause": f"no task progress for {idle_timeout_seconds}s",
+                            "error_code": reason_code,
+                            "root_cause": f"no terminal signal and no task progress for {idle_timeout_seconds}s",
+                            "impact": "run cannot converge because terminal signal is missing",
+                            "recovery_plan": "emit valid terminal signal or resume manually after investigating missing signal",
                         },
                         "convergence_report": self._convergence_report(tasks_by_id),
                     }
