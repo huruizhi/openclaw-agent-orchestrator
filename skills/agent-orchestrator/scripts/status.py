@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+from pathlib import Path
 
 from state_store import StateStore, load_env
 
@@ -11,6 +13,21 @@ from state_store import StateStore, load_env
 def _qhash(question: str) -> str:
     q = " ".join((question or "").split())
     return hashlib.sha1(q.encode("utf-8")).hexdigest()[:12]
+
+
+def _load_temporal_status(run_id: str, project_id: str | None = None) -> str | None:
+    base = Path(os.getenv("BASE_PATH", "./workspace")).expanduser()
+    if not base.is_absolute():
+        base = (Path(__file__).resolve().parent.parent / base).resolve()
+    pid = (project_id or os.getenv("PROJECT_ID", "default_project")).strip() or "default_project"
+    p = base / pid / ".orchestrator" / "state" / "temporal_runs.json"
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return ((data.get("runs") or {}).get(run_id) or {}).get("status")
+    except Exception:
+        return None
 
 
 def _normalized_view(job: dict) -> dict:
@@ -32,11 +49,26 @@ def _normalized_view(job: dict) -> dict:
         active_run_id = lr.get("run_id") or (out.get("audit") or {}).get("run_id")
     out["run_id"] = active_run_id
 
-    if isinstance(lr, dict) and lr.get("run_id") == active_run_id:
+    temporal_status = _load_temporal_status(str(active_run_id or ""), project_id=out.get("project_id")) if active_run_id else None
+    if temporal_status:
+        out["run_status"] = temporal_status
+        out["run_status_source"] = "temporal"
+    elif isinstance(lr, dict) and lr.get("run_id") == active_run_id:
         out["run_status"] = lr.get("status")
+        out["run_status_source"] = "last_result"
     else:
         # Avoid stale last_result snapshot masking active execution state.
         out["run_status"] = out.get("status")
+        out["run_status_source"] = "job"
+
+    if isinstance(lr, dict) and active_run_id and lr.get("run_id") == active_run_id:
+        lr_status = str(lr.get("status") or "")
+        if temporal_status and lr_status and temporal_status != lr_status:
+            out["status_divergence"] = {
+                "run_id": active_run_id,
+                "temporal": temporal_status,
+                "last_result": lr_status,
+            }
     if isinstance(human_inputs, list):
         out["human_input_count"] = len(human_inputs)
         out["last_human_input"] = human_inputs[-1] if human_inputs else None
