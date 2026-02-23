@@ -325,6 +325,26 @@ def _enrich_decomposition(tasks_dict: dict) -> dict:
             done_when.append("Stage B: code quality and risk checks pass")
         task["done_when"] = done_when
 
+        # Stability guard: coding/integrate/test tasks must always carry tests[] and commands[]
+        # to satisfy m2 validation even when LLM omits them in first-pass decomposition.
+        tt = str(task.get("task_type", "")).strip().lower()
+        if tt in {"implement", "test", "integrate"}:
+            tests = task.get("tests")
+            if not isinstance(tests, list) or not tests:
+                task["tests"] = [
+                    "Run unit/integration tests for changed modules",
+                    "Validate acceptance criteria mapped to issue requirements",
+                ]
+
+            commands = task.get("commands")
+            if not isinstance(commands, list) or not commands:
+                task["commands"] = [
+                    "git checkout -b <issue-branch>",
+                    "<implement or update tests>",
+                    "<run test command(s)>",
+                    "git add -A && git commit -m '<type>: <summary>'",
+                ]
+
     return tasks_dict
 
 def decompose(goal: str) -> dict:

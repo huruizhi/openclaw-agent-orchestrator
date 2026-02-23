@@ -352,6 +352,12 @@ class Executor:
         stem = Path(base).stem
         return re.sub(r"[^a-z0-9]+", "_", stem).strip("_")
 
+    @staticmethod
+    def _artifact_tokens(name: str) -> set[str]:
+        base = Path(str(name or "")).name.lower().strip()
+        stem = Path(base).stem
+        return set(re.findall(r"[a-z0-9]+", stem))
+
     def _resolve_output_path(self, expected_path: Path) -> Path:
         if expected_path.exists():
             return expected_path
@@ -360,14 +366,33 @@ class Executor:
             return expected_path
 
         expected_norm = self._normalize_artifact_name(expected_path.name)
-        if not expected_norm:
-            return expected_path
+        expected_tokens = self._artifact_tokens(expected_path.name)
 
-        for cand in task_dir.iterdir():
-            if not cand.is_file():
-                continue
-            if self._normalize_artifact_name(cand.name) == expected_norm:
-                return cand
+        candidates = [c for c in task_dir.iterdir() if c.is_file()]
+
+        # 1) strict normalized-stem match
+        if expected_norm:
+            for cand in candidates:
+                if self._normalize_artifact_name(cand.name) == expected_norm:
+                    return cand
+
+        # 2) token-overlap fallback for human-readable output labels
+        #    e.g. expected "milestone 15 关闭记录" -> actual "milestone_15_close_record.json"
+        if expected_tokens:
+            scored: list[tuple[int, int, Path]] = []
+            for cand in candidates:
+                cand_tokens = self._artifact_tokens(cand.name)
+                overlap = len(expected_tokens & cand_tokens)
+                if overlap <= 0:
+                    continue
+                scored.append((overlap, len(cand_tokens), cand))
+            if scored:
+                scored.sort(key=lambda x: (-x[0], x[1]))
+                best_overlap, _, best_path = scored[0]
+                # require at least a minimal confidence to avoid false positives
+                if best_overlap >= 2 or len(expected_tokens) == 1:
+                    return best_path
+
         return expected_path
 
     def _validate_terminal_payload(self, task_id: str, event: str, payload: object) -> tuple[bool, str | None]:
