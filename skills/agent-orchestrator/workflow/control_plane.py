@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import hashlib
 
 
 def _utc_now() -> str:
@@ -55,6 +56,11 @@ def pop_control_signals(limit: int = 100) -> list[dict[str, Any]]:
     return take
 
 
+def _resume_dedupe_key(task_id: str, answer: str) -> str:
+    base = f"{task_id.strip()}::{answer.strip()}"
+    return hashlib.sha1(base.encode("utf-8")).hexdigest()[:16]
+
+
 def apply_signal_via_api(job_id: str, action: str, payload: dict[str, Any] | None = None, *, project_id: str | None = None) -> dict[str, Any]:
     """Apply control intent via signal handler path."""
 
@@ -84,11 +90,18 @@ def apply_signal_via_api(job_id: str, action: str, payload: dict[str, Any] | Non
         store.add_event(job_id, "audit_revise_requested", payload={"revision": audit["revision"], "via": "temporal_signal"})
     elif action == "resume":
         answer = str(p.get("answer") or "").strip()
+        task_id = str(p.get("task_id") or "").strip()
         if not answer:
             return {"job_id": job_id, "status": "invalid_answer", "message": "resume answer cannot be empty"}
+
+        dedupe = _resume_dedupe_key(task_id, answer)
+        recent = store.list_events(job_id, limit=50)
+        if any(e.get("event") == "job_resumed" and str((e.get("payload") or {}).get("dedupe_key") or "") == dedupe for e in recent):
+            return store.get_job_snapshot(job_id) or {"job_id": job_id, "status": "unknown"}
+
         status = "approved" if audit_passed else "awaiting_audit"
         human_inputs = list(job.get("human_inputs") or [])
-        human_inputs.append({"at": utc_now(), "question": "", "answer": answer})
+        human_inputs.append({"at": utc_now(), "question": "", "answer": answer, "task_id": task_id})
         store.update_job(
             job_id,
             human_inputs=json.dumps(human_inputs, ensure_ascii=False),
@@ -97,8 +110,8 @@ def apply_signal_via_api(job_id: str, action: str, payload: dict[str, Any] | Non
             last_result=json.dumps({}, ensure_ascii=False),
             run_id=None,
         )
-        store.add_event(job_id, "answer_consumed", payload={"question_hash": "", "question": "", "via": "temporal_signal"})
-        store.add_event(job_id, "job_resumed", payload={"answer": answer, "via": "temporal_signal"})
+        store.add_event(job_id, "answer_consumed", payload={"question_hash": "", "question": "", "task_id": task_id, "via": "temporal_signal"})
+        store.add_event(job_id, "job_resumed", payload={"answer": answer, "task_id": task_id, "dedupe_key": dedupe, "via": "temporal_signal"})
     elif action == "cancel":
         status = "cancelled"
         store.add_event(job_id, "job_cancelled", payload={"via": "temporal_signal"})

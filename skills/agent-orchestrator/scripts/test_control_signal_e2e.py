@@ -47,9 +47,16 @@ def test_control_signal_e2e_status_convergence(tmp_path):
 
     # waiting -> resume
     store.update_job(job_id, status="waiting_human", audit_passed=1)
-    assert _control(project_id, "resume", job_id, "continue").returncode == 0
+    assert _control(project_id, "resume", job_id, "continue", "--task-id", "task_A").returncode == 0
     worker._drain_control_signals(store, project_id=project_id)
     assert store.get_job_snapshot(job_id)["status"] == "approved"
+
+    # duplicate resume should be idempotent
+    assert _control(project_id, "resume", job_id, "continue", "--task-id", "task_A").returncode == 0
+    worker._drain_control_signals(store, project_id=project_id)
+    events = store.list_events(job_id, limit=100)
+    resumed = [e for e in events if e.get("event") == "job_resumed"]
+    assert len(resumed) == 1
 
     # cancel terminal
     assert _control(project_id, "cancel", job_id).returncode == 0

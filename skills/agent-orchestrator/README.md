@@ -35,7 +35,7 @@ python3 scripts/status.py <job_id>
 
 ```bash
 python3 scripts/control.py approve <job_id>
-python3 scripts/control.py resume <job_id> "<answer>"
+python3 scripts/control.py resume <job_id> "<answer>" [--task-id <task_id>]
 ```
 
 ### 4. 审计与合规核验
@@ -97,6 +97,7 @@ Release workflow for v1.2.0: run issues 40-44 in canary first, validate converge
 - Failure class and retryability are now attached to terminal errors (`failure_class`, `retryable`).
 - Canary + rollback support scripts added: `scripts/canary_gate.py`, `scripts/rollback_release.sh` for release-gate execution.
 - M3 cutover docs: `docs/ADR-temporal-migration.md` and `docs/Runbook-temporal-cutover.md`.
+- P1 stability docs/metrics: `docs/ADR-state-source.md` and `scripts/metrics.py`.
 - Legacy submit entrypoint now defaults to compatibility proxy (StateStore path); set `ORCH_LEGACY_QUEUE_COMPAT=1` for temporary fallback.
 
 

@@ -29,6 +29,7 @@ def main() -> int:
     ps = sub.add_parser("resume")
     ps.add_argument("job_id")
     ps.add_argument("answer")
+    ps.add_argument("--task-id", default="", help="optional waiting task id for precise resume routing")
 
     pc = sub.add_parser("cancel")
     pc.add_argument("job_id")
@@ -47,6 +48,8 @@ def main() -> int:
             print(json.dumps({"job_id": args.job_id, "status": "invalid_answer", "message": "resume answer cannot be empty"}, ensure_ascii=False, indent=2))
             return 1
         payload["answer"] = answer
+        if str(args.task_id or "").strip():
+            payload["task_id"] = str(args.task_id).strip()
 
     signal = emit_control_signal(args.job_id, args.cmd, payload)
     print(json.dumps({"status": "accepted", "path": "temporal_signal", "signal": signal}, ensure_ascii=False, indent=2))
