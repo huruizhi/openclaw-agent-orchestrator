@@ -47,6 +47,7 @@ def test_submit_audit_approve_complete_flow(tmp_path, monkeypatch):
         env=os.environ.copy(),
     )
     assert cp.returncode == 0, cp.stdout + cp.stderr
+    worker._drain_control_signals(store, project_id=project_id)
 
     # approved -> running -> completed
     monkeypatch.setattr(
@@ -86,6 +87,7 @@ def test_waiting_human_resume_flow(tmp_path):
         env=os.environ.copy(),
     )
     assert cp.returncode == 0, cp.stdout + cp.stderr
+    worker._drain_control_signals(store, project_id=project_id)
 
     updated = store.get_job_snapshot(job_id)
     assert updated["status"] == "approved"
