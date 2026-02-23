@@ -92,3 +92,16 @@ python3 scripts/audit_timeline.py --job-id <job_id>
 - Acceptance criteria: P95 <= 80ms and P99 <= 150ms, both PASS in the generated report.
 - Raw evidence retention: keep JSONL with per-sample latency and report summary under `docs/release/`.
 - Review command output and attach evidence link in milestone closure note.
+
+## v1.3.2 P1 Stability Recovery Checklist
+
+- State source precedence ADR: `docs/ADR-state-source.md`.
+- No-terminal fallback judgement:
+  1. `python3 scripts/status.py <job_id>`
+  2. verify heartbeat/events (`stale_recovered`, `job_timeout`, `NO_TERMINAL_SIGNAL_*`)
+  3. if artifacts exist but terminal missing -> converge to `waiting_human` and resume via
+     `python3 scripts/resume_from_chat.py <job_id> "job_id: <job_id>; <answer>"`
+- Resume idempotency: repeated same `task_id + answer` should not create duplicate `job_resumed` events.
+- Metrics/alert checks:
+  - `python3 scripts/metrics.py --project-id <pid>`
+  - watch `stalled_count`, `resume_success_rate`, `mean_converge_time`, `alerts`.
