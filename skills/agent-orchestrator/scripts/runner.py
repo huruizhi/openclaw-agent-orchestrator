@@ -87,8 +87,13 @@ def _require_core_env() -> int:
 
 def _run_goal(goal: str, output: str | None = None) -> int:
     from orchestrator import run_workflow_from_env  # imported after env load
+    from workflow.orch_run_workflow import OrchRunWorkflow
 
-    result = run_workflow_from_env(goal)
+    backend = os.getenv("ORCH_RUN_BACKEND", "legacy").strip().lower()
+    if backend == "temporal":
+        result = OrchRunWorkflow(run_workflow_from_env).run(goal)
+    else:
+        result = run_workflow_from_env(goal)
     payload = json.dumps(result, ensure_ascii=False)
     print(payload)
 
