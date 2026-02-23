@@ -46,8 +46,17 @@ def emit_control_signal(job_id: str, action: str, payload: dict[str, Any] | None
     return body
 
 
+def pop_control_signals(limit: int = 100) -> list[dict[str, Any]]:
+    data = _read()
+    signals = list(data.get("signals") or [])
+    take = signals[: max(1, int(limit))]
+    remain = signals[len(take) :]
+    _signal_path().write_text(json.dumps({"signals": remain}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return take
+
+
 def apply_signal_via_api(job_id: str, action: str, payload: dict[str, Any] | None = None, *, project_id: str | None = None) -> dict[str, Any]:
-    """Apply control intent through signal path API (no direct mutation in CLI)."""
+    """Apply control intent via signal handler path."""
 
     from scripts.state_store import StateStore, utc_now
 

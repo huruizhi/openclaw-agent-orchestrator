@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from .parser import parse_messages
+from workflow.policy import get_activity_policy
+from workflow.task_workflow import TaskWorkflow
 from utils.task_context_signature import sign_task_context, verify_task_context_signature
 
 
@@ -52,6 +54,7 @@ class Executor:
             raise RuntimeError("TASK_CONTEXT_HMAC_KEY is required for runtime context verification")
         self._terminal_resolved: set[str] = set()
         self._artifact_recovery_events: list[dict] = []
+        self.task_workflows: dict[str, TaskWorkflow] = {}
 
     def _task_context_path(self, task_id: str) -> Path:
         return self.artifacts_dir / task_id / "task_context.json"
@@ -572,7 +575,8 @@ class Executor:
         }
 
     def run(self, tasks_by_id: dict) -> dict:
-        idle_timeout_seconds = int(os.getenv("ORCH_EXECUTOR_IDLE_TIMEOUT_SECONDS", "60"))
+        wait_policy = get_activity_policy("wait_signal")
+        idle_timeout_seconds = int(os.getenv("ORCH_EXECUTOR_IDLE_TIMEOUT_SECONDS", str(max(30, wait_policy.timeout_seconds))))
         last_progress_at = time.monotonic()
 
         while not self.scheduler.is_finished():
@@ -604,6 +608,9 @@ class Executor:
                         }
                     self.task_retry_count[task_id] += 1
                     self.started_count += 1
+                    tw = self.task_workflows.get(task_id) or TaskWorkflow(run_id=self.run_id, task_id=task_id)
+                    tw.dispatch()
+                    self.task_workflows[task_id] = tw
                     self.agent_stats[str(agent or "unassigned")]["started"] += 1
                     self.task_started_at[task_id] = time.monotonic()
                     self._set_task_state(task_id, "running")
@@ -714,6 +721,36 @@ class Executor:
                         self._notify(tasks_by_id, task_id, "task_failed", error=err)
                         self._release_task_session(task_id, session)
                         continue
+
+                    signal_type = {"done": "task_completed", "failed": "task_failed", "waiting": "task_waiting"}.get(etype)
+                    tw = self.task_workflows.get(task_id) or TaskWorkflow(run_id=self.run_id, task_id=task_id)
+                    if signal_type:
+                        try:
+                            tw.apply_signal({"type": signal_type, "run_id": self.run_id, "task_id": task_id, "payload": {}})
+                            self.task_workflows[task_id] = tw
+                        except Exception as e:
+                            ok_finish, _, finish_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, False)
+                            err = self._standard_error(
+                                error_code="TASK_WORKFLOW_SIGNAL_INVALID",
+                                root_cause=str(e),
+                                impact="task workflow terminal transition rejected",
+                                recovery_plan="emit a valid terminal signal once per task with consistent run/task ids",
+                                failure_class="logic",
+                                retryable=False,
+                            )
+                            if not ok_finish:
+                                return {
+                                    "status": "failed",
+                                    "waiting": self.waiting_tasks,
+                                    "error": finish_err,
+                                    "convergence_report": self._convergence_report(tasks_by_id),
+                                }
+                            self._terminal_resolved.add(task_id)
+                            self._record_task_end(task_id, False, tasks_by_id)
+                            self._set_task_state(task_id, "failed", error=str(e))
+                            self._notify(tasks_by_id, task_id, "task_failed", error=err)
+                            self._release_task_session(task_id, session)
+                            continue
 
                     if etype == "done":
                         ctx_ok, ctx_err = self._validate_task_context(task_id)

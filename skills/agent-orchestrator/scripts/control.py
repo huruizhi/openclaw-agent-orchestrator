@@ -11,7 +11,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from workflow.control_plane import apply_signal_via_api, emit_control_signal
+from workflow.control_plane import emit_control_signal
 
 
 def main() -> int:
@@ -49,12 +49,8 @@ def main() -> int:
         payload["answer"] = answer
 
     signal = emit_control_signal(args.job_id, args.cmd, payload)
-    applied = apply_signal_via_api(args.job_id, args.cmd, payload, project_id=args.project_id)
-
-    status = str(applied.get("status") or "accepted")
-    exit_code = 0 if status != "invalid_answer" else 1
-    print(json.dumps({"status": status, "path": "temporal_signal", "signal": signal, "job": applied}, ensure_ascii=False, indent=2))
-    return exit_code
+    print(json.dumps({"status": "accepted", "path": "temporal_signal", "signal": signal}, ensure_ascii=False, indent=2))
+    return 0
 
 
 if __name__ == "__main__":

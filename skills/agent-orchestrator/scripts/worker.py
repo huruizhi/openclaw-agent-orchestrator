@@ -15,7 +15,7 @@ from runtime_defaults import (
     get_worker_job_timeout_seconds,
     get_worker_max_concurrency,
 )
-from state_store import LEASE_SECONDS, MAX_ATTEMPTS, STALE_TIMEOUT_SECONDS, StateStore, load_env
+from state_store import LEASE_SECONDS, MAX_ATTEMPTS, STALE_TIMEOUT_SECONDS, StateStore, load_env, utc_now
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
@@ -182,6 +182,22 @@ def _execute_job(store: StateStore, job_id: str, worker_id: str, timeout_seconds
         store.add_event(job_id, "job_failed", payload={"attempt_count": attempts, "retryable": retryable, "error": str(e)[:400]})
 
 
+def _drain_control_signals(store: StateStore, *, project_id: str | None = None, limit: int = 100) -> int:
+    from workflow.control_plane import apply_signal_via_api, pop_control_signals
+
+    consumed = 0
+    for sig in pop_control_signals(limit=limit):
+        job_id = str(sig.get("job_id") or "").strip()
+        action = str(sig.get("action") or "").strip()
+        payload = dict(sig.get("payload") or {})
+        if not job_id or not action:
+            continue
+        result = apply_signal_via_api(job_id, action, payload, project_id=project_id)
+        consumed += 1
+        store.add_event(job_id, "control_signal_applied", payload={"action": action, "signal_ts": sig.get("ts"), "result_status": result.get("status", "ok"), "applied_at": utc_now()})
+    return consumed
+
+
 def main() -> int:
     load_env()
     p = argparse.ArgumentParser(description="Background worker for orchestrator queue")
@@ -197,6 +213,7 @@ def main() -> int:
     store = StateStore(args.project_id)
 
     while True:
+        _drain_control_signals(store, project_id=args.project_id)
         stale_timeout = max(1, int(args.stale_timeout or STALE_TIMEOUT_SECONDS))
         store.recover_stale_jobs(stale_timeout=stale_timeout)
         claimed = store.claim_jobs(worker_id=worker_id, limit=max(1, int(args.max_concurrency)), lease_seconds=LEASE_SECONDS)
