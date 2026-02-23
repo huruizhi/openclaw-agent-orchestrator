@@ -96,6 +96,8 @@ Release workflow for v1.2.0: run issues 40-44 in canary first, validate converge
 - `TASK_WAITING` pauses only the task branch (`scheduler.pause_task`) and keeps unrelated runnable tasks flowing; task-level wait state is tracked for resume path.
 - Failure class and retryability are now attached to terminal errors (`failure_class`, `retryable`).
 - Canary + rollback support scripts added: `scripts/canary_gate.py`, `scripts/rollback_release.sh` for release-gate execution.
+- M3 cutover docs: `docs/ADR-temporal-migration.md` and `docs/Runbook-temporal-cutover.md`.
+- Legacy submit entrypoint now defaults to compatibility proxy (StateStore path); set `ORCH_LEGACY_QUEUE_COMPAT=1` for temporary fallback.
 
 
 ## v1.2.1 runtime contract

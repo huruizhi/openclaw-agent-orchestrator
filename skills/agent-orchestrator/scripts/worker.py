@@ -21,6 +21,8 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from utils.tracing import traced_span
+
 
 def _result_to_job_status(result: dict) -> str:
     s = str(result.get("status", "")).strip().lower()
@@ -86,6 +88,12 @@ def _execute_job(store: StateStore, job_id: str, worker_id: str, timeout_seconds
     job = store.get_job_snapshot(job_id)
     if not job:
         return
+    
+    with traced_span("worker.execute_job", job_id=job_id, worker_id=worker_id):
+        _execute_job_inner(store, job, job_id, worker_id, timeout_seconds)
+
+
+def _execute_job_inner(store: StateStore, job: dict, job_id: str, worker_id: str, timeout_seconds: int) -> None:
     status = str(job.get("status", "queued"))
     prev_run: str | None = None
     if status in {"cancelled", "completed", "failed", "waiting_human"}:
@@ -192,7 +200,8 @@ def _drain_control_signals(store: StateStore, *, project_id: str | None = None, 
         payload = dict(sig.get("payload") or {})
         if not job_id or not action:
             continue
-        result = apply_signal_via_api(job_id, action, payload, project_id=project_id)
+        with traced_span("worker.apply_control_signal", job_id=job_id, action=action):
+            result = apply_signal_via_api(job_id, action, payload, project_id=project_id)
         consumed += 1
         store.add_event(job_id, "control_signal_applied", payload={"action": action, "signal_ts": sig.get("ts"), "result_status": result.get("status", "ok"), "applied_at": utc_now()})
     return consumed

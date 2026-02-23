@@ -12,6 +12,10 @@ from typing import Any
 from .parser import parse_messages
 from workflow.policy import get_activity_policy
 from workflow.task_workflow import TaskWorkflow
+from workflow.validation_activities import (
+    validate_task_context_activity,
+    validate_task_outputs_activity,
+)
 from utils.task_context_signature import sign_task_context, verify_task_context_signature
 
 
@@ -753,7 +757,11 @@ class Executor:
                             continue
 
                     if etype == "done":
-                        ctx_ok, ctx_err = self._validate_task_context(task_id)
+                        ctx_ok, ctx_err = validate_task_context_activity(
+                            task_context_path=self._task_context_path(task_id),
+                            expected_run_id=self.run_id,
+                            expected_task_id=task_id,
+                        )
                         if not ctx_ok:
                             ok_fail, _, fail_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, False)
                             if not ok_fail:
@@ -770,7 +778,14 @@ class Executor:
                             self._release_task_session(task_id, session)
                             continue
 
-                        valid, details = self._validate_task_outputs(tasks_by_id[task_id])
+                        expected_paths = [self._resolve_output_path(p) for p in self._expected_output_paths(tasks_by_id[task_id])]
+                        valid, details = validate_task_outputs_activity(
+                            expected_paths=expected_paths,
+                            validate_non_empty=self.validate_non_empty,
+                            validate_freshness=self.validate_freshness,
+                            output_max_age_min=self.output_max_age_min,
+                            validate_json_schema=self.validate_json_schema,
+                        )
                         if not valid:
                             ok_fail, _, fail_err = self._safe_call("finish_task", self.scheduler.finish_task, task_id, False)
                             if not ok_fail:

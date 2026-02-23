@@ -23,6 +23,8 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from utils.tracing import traced_span
+
 
 def _load_env_file(env_path: Path) -> None:
     if not env_path.exists():
@@ -90,10 +92,11 @@ def _run_goal(goal: str, output: str | None = None) -> int:
     from workflow.orch_run_workflow import OrchRunWorkflow
 
     backend = os.getenv("ORCH_RUN_BACKEND", "legacy").strip().lower()
-    if backend == "temporal":
-        result = OrchRunWorkflow(run_workflow_from_env).run(goal)
-    else:
-        result = run_workflow_from_env(goal)
+    with traced_span("runner.run_goal", backend=backend):
+        if backend == "temporal":
+            result = OrchRunWorkflow(run_workflow_from_env).run(goal)
+        else:
+            result = run_workflow_from_env(goal)
     payload = json.dumps(result, ensure_ascii=False)
     print(payload)
 
