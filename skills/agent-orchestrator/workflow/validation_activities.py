@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
+
+from utils.task_context_signature import verify_task_context_signature
 
 
 def validate_task_context_activity(*, task_context_path: Path, expected_run_id: str, expected_task_id: str) -> tuple[bool, str | None]:
@@ -11,10 +15,50 @@ def validate_task_context_activity(*, task_context_path: Path, expected_run_id: 
         data = json.loads(task_context_path.read_text(encoding="utf-8"))
     except Exception as e:
         return False, f"context_read_error:{e}"
+
+    if not isinstance(data, dict):
+        return False, "CONTEXT_FORMAT_INVALID"
+
     if str(data.get("run_id") or "") != str(expected_run_id):
         return False, "CONTEXT_RUN_ID_MISMATCH"
     if str(data.get("task_id") or "") != str(expected_task_id):
         return False, "CONTEXT_TASK_ID_MISMATCH"
+
+    # Keep parity with pre-M17 executor guardrails: hash integrity + optional HMAC signature.
+    payload = dict(data)
+    raw_sig = payload.pop("context_sig", "")
+    raw_hash = payload.pop("context_sha256", "")
+    context_sig = raw_sig if isinstance(raw_sig, str) else ""
+    context_hash = raw_hash if isinstance(raw_hash, str) else ""
+    if not context_hash:
+        return False, "CONTEXT_HASH_MISSING"
+    if len(context_hash) != 64 or any(ch not in "0123456789abcdef" for ch in context_hash.lower()):
+        return False, "CONTEXT_HASH_FORMAT_INVALID"
+
+    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    if hashlib.sha256(canonical).hexdigest() != context_hash:
+        return False, "CONTEXT_HASH_MISMATCH"
+
+    hmac_key = os.getenv("TASK_CONTEXT_HMAC_KEY", "").strip()
+    hmac_required = os.getenv("TASK_CONTEXT_HMAC_KEY_REQUIRED", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "prod",
+        "production",
+    }
+    if hmac_required and not hmac_key:
+        return False, "CONTEXT_HMAC_KEY_REQUIRED"
+
+    if hmac_key:
+        if not context_sig:
+            return False, "CONTEXT_SIGNATURE_MISSING"
+        signed_payload = dict(payload)
+        signed_payload["context_sha256"] = context_hash
+        if not verify_task_context_signature(signed_payload, context_sig, hmac_key):
+            return False, "CONTEXT_SIGNATURE_INVALID"
+
     return True, None
 
 
