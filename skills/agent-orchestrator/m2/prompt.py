@@ -56,8 +56,8 @@ GOOD: "Fetch HN homepage", "Parse top posts", "Write blog post"
 BAD: "Analyze HN", "Investigate", "Think about content"
 
 TASK COUNT:
-- Produce between 3 and 8 tasks
-- Prefer 4 to 6 tasks
+- Produce between 3 and 20 tasks
+- Prefer 6 to 10 tasks
 
 MINIMIZE USER INTERVENTION (GENERAL RULE):
 - Prefer autonomous execution.

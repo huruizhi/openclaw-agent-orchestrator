@@ -74,8 +74,8 @@ def validate_tasks(tasks_dict, task_mode: str = "coding"):
     if task_count == 0:
         raise ValidationError("'tasks' array cannot be empty")
 
-    if not (3 <= task_count <= 8):
-        raise ValidationError(f"Invalid task count: {task_count} (must be 3-8)")
+    if not (3 <= task_count <= 20):
+        raise ValidationError(f"Invalid task count: {task_count} (must be 3-20)")
 
     validator = get_validator()
     for i, task in enumerate(tasks_dict["tasks"]):
