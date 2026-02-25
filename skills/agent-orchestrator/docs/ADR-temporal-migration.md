@@ -18,6 +18,7 @@ We migrated control-plane and run-level state to temporal-like runtime semantics
 - Validation is testable in isolation.
 
 ## Rollback
-- Set `ORCH_RUN_BACKEND=legacy` to revert runtime backend behavior.
+- Runtime backend key: `ORCH_RUNTIME_BACKEND` (reads `ORCH_RUN_BACKEND` as compatibility fallback).
+- Set `ORCH_RUNTIME_BACKEND=legacy` to revert runtime backend behavior (only when `ORCH_PRODUCTION_CUTOVER` is disabled).
 - Set `ORCH_LEGACY_QUEUE_COMPAT=1` to temporarily route submit via legacy queue JSON.
 - If rollback is used, keep compatibility window short and log explicit rollback events.

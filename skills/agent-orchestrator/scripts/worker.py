@@ -24,6 +24,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from utils.tracing import traced_span
 from m7.scheduler_exception import SchedulerDiagnostic, classify_scheduler_exception
+from runtime_backend import enforce_backend_policy, resolve_runtime_backend
 
 
 def _scheduler_diag_path(project_id: str | None) -> Path:
@@ -166,7 +167,7 @@ def _execute_job_inner(store: StateStore, job: dict, job_id: str, worker_id: str
             run_id_hint=(prev_run if (status == "approved" and prev_run) else None),
         )
         new_status = _result_to_job_status(result)
-        backend = (os.getenv("ORCH_RUNTIME_BACKEND") or os.getenv("ORCH_RUN_BACKEND") or "legacy").strip().lower()
+        backend = enforce_backend_policy(resolve_runtime_backend())
         state_source = str(result.get("state_source") or "legacy").strip().lower()
         if backend == "temporal" and state_source != "temporal" and new_status in {"completed", "failed", "waiting_human"}:
             store.add_event(job_id, "ssot_guard_blocked", payload={"error_code": "SSOT_GUARD_BLOCKED", "backend": backend, "state_source": state_source, "status": new_status})
