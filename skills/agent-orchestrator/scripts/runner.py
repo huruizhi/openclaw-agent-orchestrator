@@ -91,7 +91,7 @@ def _run_goal(goal: str, output: str | None = None) -> int:
     from orchestrator import run_workflow_from_env  # imported after env load
     from workflow.orch_run_workflow import OrchRunWorkflow
 
-    backend = os.getenv("ORCH_RUN_BACKEND", "legacy").strip().lower()
+    backend = (os.getenv("ORCH_RUNTIME_BACKEND") or os.getenv("ORCH_RUN_BACKEND") or "legacy").strip().lower()
     with traced_span("runner.run_goal", backend=backend):
         if backend == "temporal":
             result = OrchRunWorkflow(run_workflow_from_env).run(goal)
