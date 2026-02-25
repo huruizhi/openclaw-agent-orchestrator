@@ -132,7 +132,8 @@ class StateStore:
                     updated_at TEXT NOT NULL,
                     last_notified_status TEXT,
                     last_main_heartbeat_ts INTEGER,
-                    last_heartbeat_log_ts INTEGER
+                    last_heartbeat_log_ts INTEGER,
+                    last_signal_seq INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS runs (
@@ -178,6 +179,8 @@ class StateStore:
             cols = {r[1] for r in c.execute("PRAGMA table_info(jobs)").fetchall()}
             if "audit_passed" not in cols:
                 c.execute("ALTER TABLE jobs ADD COLUMN audit_passed INTEGER NOT NULL DEFAULT 0")
+            if "last_signal_seq" not in cols:
+                c.execute("ALTER TABLE jobs ADD COLUMN last_signal_seq INTEGER NOT NULL DEFAULT 0")
 
     def submit_job(self, goal: str) -> dict[str, Any]:
         now = utc_now()

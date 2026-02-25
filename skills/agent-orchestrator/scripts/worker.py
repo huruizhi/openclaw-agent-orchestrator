@@ -140,7 +140,7 @@ def _execute_job_inner(store: StateStore, job: dict, job_id: str, worker_id: str
             run_id_hint=(prev_run if (status == "approved" and prev_run) else None),
         )
         new_status = _result_to_job_status(result)
-        backend = os.getenv("ORCH_RUN_BACKEND", "legacy").strip().lower()
+        backend = (os.getenv("ORCH_RUNTIME_BACKEND") or os.getenv("ORCH_RUN_BACKEND") or "legacy").strip().lower()
         state_source = str(result.get("state_source") or "legacy").strip().lower()
         if backend == "temporal" and state_source != "temporal" and new_status in {"completed", "failed", "waiting_human"}:
             store.add_event(job_id, "ssot_guard_blocked", payload={"error_code": "SSOT_GUARD_BLOCKED", "backend": backend, "state_source": state_source, "status": new_status})
@@ -230,10 +230,25 @@ def main() -> int:
     store = StateStore(args.project_id)
 
     while True:
-        _drain_control_signals(store, project_id=args.project_id)
+        try:
+            _drain_control_signals(store, project_id=args.project_id)
+        except Exception as e:
+            diag = classify_scheduler_exception("drain_control_signals", e)
+            print(json.dumps({"event": "scheduler_exception", "op": "drain_control_signals", "error_code": diag.error_code, "impact": diag.impact, "recovery_plan": diag.recovery_plan}, ensure_ascii=False), file=sys.stderr)
+
         stale_timeout = max(1, int(args.stale_timeout or STALE_TIMEOUT_SECONDS))
-        store.recover_stale_jobs(stale_timeout=stale_timeout)
-        claimed = store.claim_jobs(worker_id=worker_id, limit=max(1, int(args.max_concurrency)), lease_seconds=LEASE_SECONDS)
+        try:
+            store.recover_stale_jobs(stale_timeout=stale_timeout)
+        except Exception as e:
+            diag = classify_scheduler_exception("recover_stale_jobs", e)
+            print(json.dumps({"event": "scheduler_exception", "op": "recover_stale_jobs", "error_code": diag.error_code, "impact": diag.impact, "recovery_plan": diag.recovery_plan}, ensure_ascii=False), file=sys.stderr)
+
+        try:
+            claimed = store.claim_jobs(worker_id=worker_id, limit=max(1, int(args.max_concurrency)), lease_seconds=LEASE_SECONDS)
+        except Exception as e:
+            diag = classify_scheduler_exception("claim_jobs", e)
+            print(json.dumps({"event": "scheduler_exception", "op": "claim_jobs", "error_code": diag.error_code, "impact": diag.impact, "recovery_plan": diag.recovery_plan}, ensure_ascii=False), file=sys.stderr)
+            claimed = []
 
         threads: list[threading.Thread] = []
         for jid in claimed:

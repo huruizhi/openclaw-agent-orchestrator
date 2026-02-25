@@ -5,19 +5,20 @@ import argparse
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from workflow.control_plane import emit_control_signal
+from workflow.control_plane import apply_signal_via_api, emit_control_signal
 
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Control queued orchestration jobs")
     p.add_argument("--project-id", help="project id for queue isolation")
-    p.add_argument("--request-id", required=True, help="idempotency request id")
+    p.add_argument("--request-id", help="idempotency request id (optional; auto-generated when omitted)")
     p.add_argument("--signal-seq", type=int, default=0, help="monotonic sequence for out-of-order rejection")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -41,7 +42,8 @@ def main() -> int:
     if args.project_id:
         os.environ["PROJECT_ID"] = args.project_id
 
-    payload: dict[str, str | int] = {"request_id": args.request_id, "signal_seq": int(args.signal_seq)}
+    request_id = str(args.request_id or "").strip() or uuid.uuid4().hex[:16]
+    payload: dict[str, str | int] = {"request_id": request_id, "signal_seq": int(args.signal_seq)}
     if args.cmd == "revise":
         payload["revision"] = str(args.revision)
     elif args.cmd == "resume":
@@ -53,8 +55,24 @@ def main() -> int:
         if str(args.task_id or "").strip():
             payload["task_id"] = str(args.task_id).strip()
 
-    signal = emit_control_signal(args.job_id, args.cmd, payload, request_id=args.request_id)
-    print(json.dumps({"status": "accepted", "path": "temporal_signal", "signal": signal}, ensure_ascii=False, indent=2))
+    signal = emit_control_signal(args.job_id, args.cmd, payload, request_id=request_id)
+
+    # Backward-compatible local apply: preserve old control.py behavior for direct tests/CLI flows
+    # while still writing canonical temporal signal for worker consumption.
+    apply_result = apply_signal_via_api(args.job_id, args.cmd, payload, project_id=args.project_id)
+
+    print(
+        json.dumps(
+            {
+                "status": "accepted",
+                "path": "temporal_signal",
+                "signal": signal,
+                "apply_result": apply_result,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 
