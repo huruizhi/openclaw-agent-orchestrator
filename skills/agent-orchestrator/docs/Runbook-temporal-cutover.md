@@ -1,7 +1,8 @@
 # Runbook: Temporal Cutover / Rollback
 
 ## Feature Flags
-- `ORCH_RUN_BACKEND=temporal|legacy`
+- `ORCH_RUNTIME_BACKEND=temporal|legacy`（兼容读取 `ORCH_RUN_BACKEND`）
+- `ORCH_PRODUCTION_CUTOVER=1` 时强制仅允许 temporal backend
 - `ORCH_LEGACY_QUEUE_COMPAT=0|1`
 - `ORCH_TRACE_ENABLED=0|1`
 

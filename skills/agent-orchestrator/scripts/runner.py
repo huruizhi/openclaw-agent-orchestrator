@@ -23,6 +23,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from runtime_backend import enforce_backend_policy, resolve_runtime_backend
 from utils.tracing import traced_span
 
 
@@ -91,7 +92,12 @@ def _run_goal(goal: str, output: str | None = None) -> int:
     from orchestrator import run_workflow_from_env  # imported after env load
     from workflow.orch_run_workflow import OrchRunWorkflow
 
-    backend = (os.getenv("ORCH_RUNTIME_BACKEND") or os.getenv("ORCH_RUN_BACKEND") or "legacy").strip().lower()
+    try:
+        backend = enforce_backend_policy(resolve_runtime_backend())
+    except RuntimeError as e:
+        print(f"[runner][FAIL] {e}", file=sys.stderr)
+        return 1
+
     with traced_span("runner.run_goal", backend=backend):
         if backend == "temporal":
             result = OrchRunWorkflow(run_workflow_from_env).run(goal)
