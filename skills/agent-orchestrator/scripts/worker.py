@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from runtime_defaults import (
     get_running_stale_seconds,
@@ -22,7 +23,32 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from utils.tracing import traced_span
-from m7.scheduler_exception import classify_scheduler_exception
+from m7.scheduler_exception import SchedulerDiagnostic, classify_scheduler_exception
+
+
+def _scheduler_diag_path(project_id: str | None) -> Path:
+    from state_store import project_root
+
+    p = project_root(project_id) / ".orchestrator" / "state" / "scheduler_exceptions.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _record_scheduler_exception(project_id: str | None, op: str, diag: SchedulerDiagnostic, extra: dict[str, Any] | None = None) -> None:
+    rec = {
+        "ts": utc_now(),
+        "op": op,
+        "error_code": diag.error_code,
+        "kind": diag.kind,
+        "root_cause": diag.root_cause,
+        "impact": diag.impact,
+        "recovery_plan": diag.recovery_plan,
+    }
+    if extra:
+        rec["extra"] = extra
+    path = _scheduler_diag_path(project_id)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
 def _result_to_job_status(result: dict) -> str:
@@ -234,6 +260,7 @@ def main() -> int:
             _drain_control_signals(store, project_id=args.project_id)
         except Exception as e:
             diag = classify_scheduler_exception("drain_control_signals", e)
+            _record_scheduler_exception(args.project_id, "drain_control_signals", diag)
             print(json.dumps({"event": "scheduler_exception", "op": "drain_control_signals", "error_code": diag.error_code, "impact": diag.impact, "recovery_plan": diag.recovery_plan}, ensure_ascii=False), file=sys.stderr)
 
         stale_timeout = max(1, int(args.stale_timeout or STALE_TIMEOUT_SECONDS))
@@ -241,12 +268,14 @@ def main() -> int:
             store.recover_stale_jobs(stale_timeout=stale_timeout)
         except Exception as e:
             diag = classify_scheduler_exception("recover_stale_jobs", e)
+            _record_scheduler_exception(args.project_id, "recover_stale_jobs", diag)
             print(json.dumps({"event": "scheduler_exception", "op": "recover_stale_jobs", "error_code": diag.error_code, "impact": diag.impact, "recovery_plan": diag.recovery_plan}, ensure_ascii=False), file=sys.stderr)
 
         try:
             claimed = store.claim_jobs(worker_id=worker_id, limit=max(1, int(args.max_concurrency)), lease_seconds=LEASE_SECONDS)
         except Exception as e:
             diag = classify_scheduler_exception("claim_jobs", e)
+            _record_scheduler_exception(args.project_id, "claim_jobs", diag)
             print(json.dumps({"event": "scheduler_exception", "op": "claim_jobs", "error_code": diag.error_code, "impact": diag.impact, "recovery_plan": diag.recovery_plan}, ensure_ascii=False), file=sys.stderr)
             claimed = []
 
