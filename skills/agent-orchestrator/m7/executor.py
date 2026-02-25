@@ -295,6 +295,7 @@ class Executor:
                 "- If an input refers to an artifact filename, first read from task-scoped dir, then workflow shared dir if needed.",
                 "- Use exact output filenames from Required Outputs whenever possible.",
                 "- Request user input only when strictly necessary and unavailable via configured tools/skills.",
+                "- If the task involves PR merge/issue closure/release, run pre-merge gate first: python3 scripts/pr_merge_gate.py --repo <owner/repo> --pr <number>. Any pass=false result MUST block merge and be reported as failure.",
                 "",
                 "When finished output exactly:",
                 "[TASK_DONE]",
