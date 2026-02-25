@@ -64,6 +64,14 @@ def _normalized_view(job: dict) -> dict:
         out["run_status"] = out.get("status")
         out["run_status_source"] = "job"
 
+    source = out.get("run_status_source")
+    if source == "temporal":
+        out["state_source"] = "temporal"
+    elif source == "last_result":
+        out["state_source"] = "mixed"
+    else:
+        out["state_source"] = "legacy"
+
     if isinstance(lr, dict) and active_run_id and lr.get("run_id") == active_run_id:
         lr_status = str(lr.get("status") or "")
         if temporal_status and lr_status and temporal_status != lr_status:
