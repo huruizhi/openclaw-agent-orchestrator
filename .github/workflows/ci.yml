@@ -25,8 +25,34 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pytest
 
-      - name: Run critical regression tests (#6)
+      - name: Run critical regression tests (expanded)
         run: |
           pytest -q \
             test_orchestrate_pipeline.py \
-            scripts/test_worker_regression.py
+            scripts/test_worker_regression.py \
+            scripts/test_control_signal_e2e.py \
+            scripts/test_control_temporal_signals.py \
+            scripts/test_p1_regression_suite.py \
+            scripts/test_release_gate_check.py \
+            scripts/test_slo_gate.py \
+            scripts/test_canary_rollout.py
+
+      - name: Run release gate smoke (healthy should pass)
+        run: |
+          python3 scripts/release_gate_check.py \
+            --project-id ci_gate_ok \
+            --metrics-json '{"stalled_rate":0.01,"resume_success_rate":0.995,"terminal_once_violation":0,"stalled_rate_rebound":0.0,"terminal_reversal":0,"resume_failure_spike":0.0}' \
+            --min-stage-hours 0 \
+            --fail-on-block
+
+      - name: Run release gate smoke (redline should block)
+        run: |
+          set +e
+          python3 scripts/release_gate_check.py \
+            --project-id ci_gate_block \
+            --metrics-json '{"stalled_rate":0.01,"resume_success_rate":0.995,"terminal_once_violation":0,"stalled_rate_rebound":0.06,"terminal_reversal":0,"resume_failure_spike":0.0}' \
+            --min-stage-hours 0 \
+            --fail-on-block
+          RC=$?
+          set -e
+          test "$RC" -eq 1
