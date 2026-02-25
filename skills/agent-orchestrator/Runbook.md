@@ -93,6 +93,21 @@ python3 scripts/audit_timeline.py --job-id <job_id>
 - Raw evidence retention: keep JSONL with per-sample latency and report summary under `docs/release/`.
 - Review command output and attach evidence link in milestone closure note.
 
+## v1.3.3 Merge 前代码审查 Gate（强制）
+
+- 规范清单：`docs/release/MERGE_REVIEW_CHECKLIST.md`
+- 最低自动门禁（防 docs 占位合并）：
+  ```bash
+  python3 scripts/pr_merge_gate.py --repo huruizhi/openclaw-agent-orchestrator --pr <PR_NUMBER>
+  ```
+- Gate 结果解释：
+  - `pass=true`：存在有效代码文件变更，可进入人工评审。
+  - `pass=false`：直接阻断 merge（docs-only 或无有效代码变更）。
+- 流程要求：
+  1) 先过 `pr_merge_gate.py`
+  2) 再做需求映射与测试证据核验
+  3) 最后 reviewer approve 后才允许 merge
+
 ## v1.3.2 P1 Stability Recovery Checklist
 
 - State source precedence ADR: `docs/ADR-state-source.md`.
