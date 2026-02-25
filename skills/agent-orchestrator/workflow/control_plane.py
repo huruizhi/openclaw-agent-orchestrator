@@ -32,17 +32,24 @@ def _read() -> dict[str, Any]:
         return {"signals": []}
 
 
-def emit_control_signal(job_id: str, action: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+def emit_control_signal(job_id: str, action: str, payload: dict[str, Any] | None = None, *, request_id: str | None = None) -> dict[str, Any]:
     if action not in {"approve", "revise", "resume", "cancel"}:
         raise ValueError(f"unsupported control action: {action}")
     body = {
         "job_id": job_id,
         "action": action,
+        "request_id": str(request_id or "").strip(),
         "payload": dict(payload or {}),
         "ts": _utc_now(),
     }
     data = _read()
+    dedupe = data.setdefault("dedupe", {})
+    key = f"{job_id}:{body['request_id']}"
+    if body["request_id"] and key in dedupe:
+        return {**body, "deduped": True}
     data.setdefault("signals", []).append(body)
+    if body["request_id"]:
+        dedupe[key] = {"action": action, "ts": body["ts"]}
     _signal_path().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return body
 
@@ -67,12 +74,18 @@ def apply_signal_via_api(job_id: str, action: str, payload: dict[str, Any] | Non
     from scripts.state_store import StateStore, utc_now
 
     p = dict(payload or {})
+    request_id = str(p.get("request_id") or "").strip()
+    signal_seq = int(p.get("signal_seq") or 0)
     store = StateStore(project_id)
     job = store.get_job_snapshot(job_id)
     if not job:
         return {"job_id": job_id, "status": "not_found"}
 
     status = job.get("status")
+    last_signal_seq = int(job.get("last_signal_seq") or 0)
+    if signal_seq and signal_seq <= last_signal_seq:
+        store.add_event(job_id, "signal_rejected", payload={"reason": "out_of_order", "signal_seq": signal_seq, "last_signal_seq": last_signal_seq, "request_id": request_id})
+        return {"job_id": job_id, "status": "rejected", "reason": "out_of_order", "request_id": request_id}
     audit = job.get("audit") or {}
     audit_passed = bool(job.get("audit_passed"))
 
@@ -122,5 +135,6 @@ def apply_signal_via_api(job_id: str, action: str, payload: dict[str, Any] | Non
         audit_decision=audit.get("decision", "pending"),
         audit_revision=audit.get("revision", ""),
         audit_passed=(1 if audit_passed else 0),
+        last_signal_seq=(signal_seq or last_signal_seq),
     )
     return store.get_job_snapshot(job_id) or {"job_id": job_id, "status": "unknown"}
