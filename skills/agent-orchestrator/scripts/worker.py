@@ -22,6 +22,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from utils.tracing import traced_span
+from m7.scheduler_exception import classify_scheduler_exception
 
 
 def _result_to_job_status(result: dict) -> str:
@@ -182,6 +183,7 @@ def _execute_job_inner(store: StateStore, job: dict, job_id: str, worker_id: str
         )
         store.add_event(job_id, "job_timeout", payload={"attempt_count": attempts, "retryable": retryable})
     except Exception as e:
+        diag = classify_scheduler_exception("execute_job", e)
         cur = store.get_job_snapshot(job_id) or {}
         attempts = int(cur.get("attempt_count") or 0) + 1
         retryable = attempts < MAX_ATTEMPTS
@@ -189,11 +191,11 @@ def _execute_job_inner(store: StateStore, job: dict, job_id: str, worker_id: str
             job_id,
             attempt_count=attempts,
             status=("approved" if retryable else "failed"),
-            error=str(e),
+            error=diag.root_cause,
             runner_pid=None,
             lease_until=None,
         )
-        store.add_event(job_id, "job_failed", payload={"attempt_count": attempts, "retryable": retryable, "error": str(e)[:400]})
+        store.add_event(job_id, "job_failed", payload={"attempt_count": attempts, "retryable": retryable, "error": diag.root_cause[:400], "error_code": diag.error_code, "impact": diag.impact, "recovery_plan": diag.recovery_plan, "kind": diag.kind})
 
 
 def _drain_control_signals(store: StateStore, *, project_id: str | None = None, limit: int = 100) -> int:
