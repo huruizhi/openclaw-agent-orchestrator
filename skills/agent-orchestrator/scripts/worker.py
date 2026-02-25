@@ -230,10 +230,25 @@ def main() -> int:
     store = StateStore(args.project_id)
 
     while True:
-        _drain_control_signals(store, project_id=args.project_id)
+        try:
+            _drain_control_signals(store, project_id=args.project_id)
+        except Exception as e:
+            diag = classify_scheduler_exception("drain_control_signals", e)
+            print(json.dumps({"event": "scheduler_exception", "op": "drain_control_signals", "error_code": diag.error_code, "impact": diag.impact, "recovery_plan": diag.recovery_plan}, ensure_ascii=False), file=sys.stderr)
+
         stale_timeout = max(1, int(args.stale_timeout or STALE_TIMEOUT_SECONDS))
-        store.recover_stale_jobs(stale_timeout=stale_timeout)
-        claimed = store.claim_jobs(worker_id=worker_id, limit=max(1, int(args.max_concurrency)), lease_seconds=LEASE_SECONDS)
+        try:
+            store.recover_stale_jobs(stale_timeout=stale_timeout)
+        except Exception as e:
+            diag = classify_scheduler_exception("recover_stale_jobs", e)
+            print(json.dumps({"event": "scheduler_exception", "op": "recover_stale_jobs", "error_code": diag.error_code, "impact": diag.impact, "recovery_plan": diag.recovery_plan}, ensure_ascii=False), file=sys.stderr)
+
+        try:
+            claimed = store.claim_jobs(worker_id=worker_id, limit=max(1, int(args.max_concurrency)), lease_seconds=LEASE_SECONDS)
+        except Exception as e:
+            diag = classify_scheduler_exception("claim_jobs", e)
+            print(json.dumps({"event": "scheduler_exception", "op": "claim_jobs", "error_code": diag.error_code, "impact": diag.impact, "recovery_plan": diag.recovery_plan}, ensure_ascii=False), file=sys.stderr)
+            claimed = []
 
         threads: list[threading.Thread] = []
         for jid in claimed:
