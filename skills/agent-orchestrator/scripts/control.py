@@ -17,6 +17,8 @@ from workflow.control_plane import emit_control_signal
 def main() -> int:
     p = argparse.ArgumentParser(description="Control queued orchestration jobs")
     p.add_argument("--project-id", help="project id for queue isolation")
+    p.add_argument("--request-id", required=True, help="idempotency request id")
+    p.add_argument("--signal-seq", type=int, default=0, help="monotonic sequence for out-of-order rejection")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pa = sub.add_parser("approve")
@@ -39,7 +41,7 @@ def main() -> int:
     if args.project_id:
         os.environ["PROJECT_ID"] = args.project_id
 
-    payload: dict[str, str] = {}
+    payload: dict[str, str | int] = {"request_id": args.request_id, "signal_seq": int(args.signal_seq)}
     if args.cmd == "revise":
         payload["revision"] = str(args.revision)
     elif args.cmd == "resume":
@@ -51,7 +53,7 @@ def main() -> int:
         if str(args.task_id or "").strip():
             payload["task_id"] = str(args.task_id).strip()
 
-    signal = emit_control_signal(args.job_id, args.cmd, payload)
+    signal = emit_control_signal(args.job_id, args.cmd, payload, request_id=args.request_id)
     print(json.dumps({"status": "accepted", "path": "temporal_signal", "signal": signal}, ensure_ascii=False, indent=2))
     return 0
 
